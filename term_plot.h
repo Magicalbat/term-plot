@@ -31,12 +31,9 @@ typedef struct {
 
 tp_string8 tp_str8_from_cstr(tp_u8* cstr);
 
-typedef struct {
-    tp_f64 left, right, top, bottom;
-} tp_rect64;
-
 typedef enum {
-    TP_RASTER_BRAILLE = 0,
+    TP_RASTER_DEFAULT = 0,
+    TP_RASTER_BRAILLE,
     TP_RASTER_ASCII,
 } tp_raster_type;
 
@@ -50,12 +47,42 @@ typedef enum {
 } tp_axes_display_flags;
 
 typedef struct {
+    // Number of rows of subplots
+    // If `subplot_rows` is 0, the figure will default to 1 subplot row
+    tp_u32 subplot_rows;
+
+    // Number of columns of subplots
+    // If `subplot_cols` is 0, the figure will default to 1 subplot column
+    tp_u32 subplot_cols;
+
     // Number of characters wide
     // 0 will default to the available terminal width
+    // Dynamically showing the graph may result in a smaller graph if
+    // `char_width` does not fit within the current terminal window
     tp_u32 char_width;
 
     // Number of characters high
     // 0 will default to the available terminal height
+    // Dynamically showing the graph may result in a smaller graph if
+    // `char_height` does not fit within the current terminal window
+    tp_u32 char_height;
+
+    tp_raster_type raster_type;
+
+    tp_string8 title;
+} tp_figure_desc;
+
+typedef struct {
+    // Number of characters wide
+    // 0 will default to the available terminal width
+    // Dynamically showing the graph may result in a smaller graph if
+    // `char_width` does not fit within the current terminal window
+    tp_u32 char_width;
+
+    // Number of characters high
+    // 0 will default to the available terminal height
+    // Dynamically showing the graph may result in a smaller graph if
+    // `char_height` does not fit within the current terminal window
     tp_u32 char_height;
 
     tp_raster_type raster_type;
@@ -65,12 +92,29 @@ typedef struct {
     tp_string8 ylabel;
     tp_string8 title;
 
-    // Display bounds of the axes
-    // { 0, 0, 0, 0 } will default to fit the data
-    tp_rect64 bounds;
+    // Minimum x bound for the axes
+    // If both `xmin` and `xmax` are 0, the x bounds will fit to the data
+    tp_f64 xmin;
+
+    // Maximum x bound for the axes
+    // If both `xmin` and `xmax` are 0, the x bounds will fit to the data
+    tp_f64 xmax;
+
+    // Minimum y bound for the axes
+    // If both `ymin` and `ymax` are 0, the y bounds will fit to the data
+    tp_f64 ymin;
+
+    // Maximum y bound for the axes
+    // If both `ymin` and `ymax` are 0, the y bounds will fit to the data
+    tp_f64 ymax;
 } tp_axes_desc;
 
 typedef struct {
+    // Row of the axes to plot to
+    tp_u32 axes_row;
+    // Column of the axes to plot to
+    tp_u32 axes_col;
+    
     tp_u32 num_points;
 
     // `xs` can be NULL. If it is, the plot will use 0...`num_points`-1
@@ -80,39 +124,39 @@ typedef struct {
     tp_string8 label;
 } tp_plot_desc;
 
-typedef struct tp_axes tp_axes;
+typedef struct tp_figure tp_figure;
 
-tp_axes* tp_axes_create(const tp_axes_desc* axes_desc);
-void tp_axes_destroy(tp_axes* axes);
+// Creates a new figure for plotting
+tp_figure* tp_begin(const tp_figure_desc* fig_desc);
 
-void tp_axes_set_char_width(tp_axes* axes, tp_u32 char_width);
-void tp_axes_set_char_height(tp_axes* axes, tp_u32 char_height);
-void tp_axes_set_raster(tp_axes* axes, tp_raster_type raster_type);
-void tp_axes_set_display_flags(tp_axes* axes, tp_axes_display_flags flags);
-void tp_axes_set_xlabel(tp_axes* axes, tp_string8 xlabel);
-void tp_axes_set_ylabel(tp_axes* axes, tp_string8 xlabel);
-void tp_axes_set_title(tp_axes* axes, tp_string8 title);
-void tp_axes_set_xlim(tp_axes* axes, tp_f64 xmin, tp_f64 xmax);
-void tp_axes_set_ylim(tp_axes* axes, tp_f64 ymin, tp_f64 ymax);
+// Destroys any resources the figure is using
+void tp_end(tp_figure* fig);
 
-void tp_axes_plot(tp_axes* axes, const tp_plot_desc* plot_desc);
+// Each of the subplot axes can only be setup once
+// That is, all subsequent calls to `tp_axes_setup` of the same subplot cell
+// will be ignored
+void tp_axes_setup(
+    tp_figure* fig, tp_u32 arow, tp_u32 acol,
+    const tp_axes_desc* axes_desc
+);
 
-// Returns the size in bytes required to store the rendered plot with a utf8
-// stream
-tp_u64 tp_axes_utf8_size(tp_axes* axes);
+void tp_plot(tp_figure* fig, const tp_plot_desc* plot_desc);
 
-// Renders a static view of the plot to the given buffer
-// `out` must have at least as many bytes as returned by `tp_axes_utf8_size`
-void tp_axes_render_utf8(tp_axes* axes, tp_u8* out);
+// Size of the rendered utf8 stream in **bytes**
+tp_u64 tp_render_utf8_size(tp_figure* fig);
 
-// If interactive == false, prints the axes to stdout
-// If interactive == true, takes over control flow and displays an interactive
-// plot to the terminal window
-void tp_axes_show(tp_axes* axes, tp_b8 interactive);
+// Renders the figure as a utf8 stream to the pointer `out`
+// `out` must be at least the size in bytes returned by `tp_render_utf8_size`
+void tp_render_utf8(tp_figure* fig, tp_u8* out);
 
-// This is the same as `tp_axes_show`, but it will also destroy the axes and 
-// any associated memory when the show if finished
-void tp_axes_show_and_destroy(tp_axes* axes, tp_b8 interactive);
+// Prints out the current graph statically to standard out
+// If `dynamic` is true, the figure will take over the console, and there will 
+// be keybinds to interact with the graph
+void tp_show(tp_figure* fig, tp_b8 dynamic);
+
+// This is the same as `tp_show` followed by `tp_end`
+// Shows the figure and deletes it when done
+void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 #endif // TERM_PLOT_H_INCLUDE
 
@@ -130,7 +174,6 @@ tp_string8 tp_str8_from_cstr(tp_u8* cstr) {
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
-
 
 /*
 MIT License
