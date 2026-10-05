@@ -97,7 +97,21 @@ void tp_axes_set_ylim(tp_axes* axes, tp_f64 ymin, tp_f64 ymax);
 
 void tp_axes_plot(tp_axes* axes, const tp_plot_desc* plot_desc);
 
+// Returns the size in bytes required to store the rendered plot with a utf8
+// stream
+tp_u64 tp_axes_utf8_size(tp_axes* axes);
+
+// Renders a static view of the plot to the given buffer
+// `out` must have at least as many bytes as returned by `tp_axes_utf8_size`
+void tp_axes_render_utf8(tp_axes* axes, tp_u8* out);
+
+// If interactive == false, prints the axes to stdout
+// If interactive == true, takes over control flow and displays an interactive
+// plot to the terminal window
 void tp_axes_show(tp_axes* axes, tp_b8 interactive);
+
+// This is the same as `tp_axes_show`, but it will also destroy the axes and 
+// any associated memory when the show if finished
 void tp_axes_show_and_destroy(tp_axes* axes, tp_b8 interactive);
 
 #endif // TERM_PLOT_H_INCLUDE
