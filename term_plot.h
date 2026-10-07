@@ -2,6 +2,13 @@
 #ifndef TERM_PLOT_H_INCLUDE
 #define TERM_PLOT_H_INCLUDE
 
+// Note(Ian) I am not super familiar with all the C stuff for linux, so let me
+// know if there is a better way to do this. I think this is required for 
+// `madvise`
+#if defined(__linux__) && !defined(_DEFAULT_SOURCE)
+#   define _DEFAULT_SOURCE
+#endif
+
 #include <stdint.h>
 
 typedef int8_t tp_i8;
@@ -160,7 +167,187 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 #endif // TERM_PLOT_H_INCLUDE
 
+////////////////////////////////////////////////////////////////////////////////
+// 
+// 
+// Implementation
+//
+// 
+////////////////////////////////////////////////////////////////////////////////
+
 #ifdef TERM_PLOT_IMPLEMENTATION
+
+#include <stddef.h>
+
+#define _TP_KiB(n) ((tp_u64)(n) << 10)
+#define _TP_MiB(n) ((tp_u64)(n) << 20)
+
+#define _TP_TRUE 1
+#define _TP_FALSE 1
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Platform Memory Allocation
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+void* _tp_mem_reserve(tp_u64 size);
+tp_b32 _tp_mem_commit(void* mem, tp_u64 size);
+tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
+tp_b32 _tp_mem_release(void* mem, tp_u64 size);
+tp_u32 _tp_page_size(void);
+
+#if defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#   define WIN32_LEAN_AND_MEAN
+#endif
+
+#include <Windows.h>
+
+void* _tp_mem_reserve(tp_u64 size) {
+    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE);
+}
+
+tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
+    void* ret = VirtualAlloc(mem, size, MEM_COMMIT, PAGE_READWRITE);
+    return ret != NULL;
+}
+
+tp_b32 _tp_mem_decommit(void* mem, tp_u64 size) {
+    return VirtualFree(mem, size, MEM_DECOMMIT);
+}
+
+tp_b32 _tp_mem_release(void* mem, tp_u64 size) {
+    return VirtualFree(mem, size, MEM_RELEASE);
+}
+
+tp_u32 _tp_page_size(void) {
+    SYSTEM_INFO si = { 0 };
+    GetSystemInfo(&si);
+    return si.dwPageSize;
+}
+
+#elif defined(__linux__)
+
+#include <unistd.h>
+#include <sys/mman.h>
+
+void* plat_mem_reserve(tp_u64 size) {
+    void* out = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (out == MAP_FAILED) {
+        return NULL;
+    }
+    return out;
+}
+
+tp_b32 plat_mem_commit(void* ptr, tp_u64 size) {
+    tp_i32 ret = mprotect(ptr, size, PROT_READ | PROT_WRITE);
+    return ret == 0;
+}
+
+tp_b32 plat_mem_decommit(void* ptr, tp_u64 size) {
+    tp_i32 ret = mprotect(ptr, size, PROT_NONE);
+
+    if (ret != 0) return _TP_FALSE;
+
+    ret = madvise(ptr, size, MADV_DONTNEED);
+
+    return ret == 0;
+}
+
+tp_b32 plat_mem_release(void* ptr, tp_u64 size) {
+    tp_i32 ret = munmap(ptr, size);
+    return ret == 0;
+}
+
+tp_u32 _tp_page_size(void) {
+    return (tp_u32)sysconf(_SC_PAGESIZE);
+}
+
+#else
+
+#if !defined(TP_MALLOC) && !defined(TP_FREE)
+#   include <stdlib.h>
+#   define TP_MALLOC malloc
+#   define TP_FREE free
+#elif defined(TP_MALLOC) != defined(TP_FREE)
+#   error "You must define both TP_MALLOC and TP_FREE"
+#endif
+
+void* _tp_mem_reserve(tp_u64 size) {
+    return TP_MALLOC(size);
+}
+
+tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
+    (void)mem;
+    (void)size;
+
+    return _TP_TRUE;
+}
+
+tp_b32 _tp_mem_decommit(void* mem, tp_u64 size) {
+    (void)mem;
+    (void)size;
+
+    return _TP_TRUE;
+}
+
+tp_b32 _tp_mem_release(void* mem, tp_u64 size) {
+    (void)size;
+
+    TP_FREE(mem);
+
+    return _TP_TRUE;
+}
+
+tp_u32 _tp_page_size(void) {
+    return _TP_KiB(4);
+}
+
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Arena allocator
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+#define _TP_ARENA_HEADER_SIZE (sizeof(mem_arena))
+#define _TP_ARENA_ALIGN (2 * sizeof(void*))
+
+typedef struct mem_arena {
+    struct mem_arena* current;
+    struct mem_arena* prev;
+
+    tp_u64 reserve_size;
+    tp_u64 commit_size;
+
+    tp_u64 base_pos;
+    tp_u64 pos;
+    tp_u64 commit_pos;
+} _tp_arena;
+
+typedef struct {
+    _tp_arena* arena;
+    tp_u64 start_pos;
+} _tp_arena_temp;
+
+#define _TP_PUSH_STRUCT(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_FALSE)
+#define _TP_PUSH_STRUCT_NZ(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_TRUE)
+#define _TP_PUSH_ARRAY(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (u64)(n), _TP_FALSE)
+#define _TP_PUSH_ARRAY_NZ(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (u64)(n), _TP_TRUE)
+
+_tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size);
+void _tp_arena_destroy(_tp_arena* arena);
+tp_u64 _tp_arena_get_pos(_tp_arena* arena);
+void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b8 non_zero);
+void _tp_arena_pop(_tp_arena* arena, tp_u64 size);
+void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos);
+void _tp_arena_clear(_tp_arena* arena);
+
+_tp_arena_temp _tp_arena_temp_begin(_tp_arena* arena);
+void _tp_arena_temp_end(_tp_arena_temp temp);
 
 tp_string8 tp_str8_from_cstr(tp_u8* cstr) {
     tp_u8* start = cstr;
