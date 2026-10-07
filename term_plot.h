@@ -179,6 +179,19 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 #include <stddef.h>
 
+#ifndef TP_FATAL_ERROR
+#   include <stdio.h>
+#   include <stdlib.h>
+#   define TP_FATAL_ERROR(msg) do { \
+        fprintf(stderr, (msg)); \
+        exit(1); \
+    } while (0)
+#endif
+
+#define _TP_MIN(a, b) ((a) < (b) ? (a) : (b))
+
+#define _TP_ALIGN_UP_POW2(n, p) (((tp_u64)(n) + ((tp_u64)(p) - 1)) & (~((tp_u64)(p) - 1)))
+
 #define _TP_KiB(n) ((tp_u64)(n) << 10)
 #define _TP_MiB(n) ((tp_u64)(n) << 20)
 
@@ -233,7 +246,7 @@ tp_u32 _tp_page_size(void) {
 #include <unistd.h>
 #include <sys/mman.h>
 
-void* plat_mem_reserve(tp_u64 size) {
+void* _tp_mem_reserve(tp_u64 size) {
     void* out = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (out == MAP_FAILED) {
         return NULL;
@@ -241,12 +254,12 @@ void* plat_mem_reserve(tp_u64 size) {
     return out;
 }
 
-tp_b32 plat_mem_commit(void* ptr, tp_u64 size) {
+tp_b32 _tp_mem_commit(void* ptr, tp_u64 size) {
     tp_i32 ret = mprotect(ptr, size, PROT_READ | PROT_WRITE);
     return ret == 0;
 }
 
-tp_b32 plat_mem_decommit(void* ptr, tp_u64 size) {
+tp_b32 _tp_mem_decommit(void* ptr, tp_u64 size) {
     tp_i32 ret = mprotect(ptr, size, PROT_NONE);
 
     if (ret != 0) return _TP_FALSE;
@@ -256,7 +269,7 @@ tp_b32 plat_mem_decommit(void* ptr, tp_u64 size) {
     return ret == 0;
 }
 
-tp_b32 plat_mem_release(void* ptr, tp_u64 size) {
+tp_b32 _tp_mem_release(void* ptr, tp_u64 size) {
     tp_i32 ret = munmap(ptr, size);
     return ret == 0;
 }
@@ -313,12 +326,12 @@ tp_u32 _tp_page_size(void) {
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
-#define _TP_ARENA_HEADER_SIZE (sizeof(mem_arena))
+#define _TP_ARENA_HEADER_SIZE (sizeof(_tp_arena))
 #define _TP_ARENA_ALIGN (2 * sizeof(void*))
 
-typedef struct mem_arena {
-    struct mem_arena* current;
-    struct mem_arena* prev;
+typedef struct _tp_arena {
+    struct _tp_arena* current;
+    struct _tp_arena* prev;
 
     tp_u64 reserve_size;
     tp_u64 commit_size;
@@ -338,16 +351,157 @@ typedef struct {
 #define _TP_PUSH_ARRAY(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (u64)(n), _TP_FALSE)
 #define _TP_PUSH_ARRAY_NZ(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (u64)(n), _TP_TRUE)
 
-_tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size);
-void _tp_arena_destroy(_tp_arena* arena);
-tp_u64 _tp_arena_get_pos(_tp_arena* arena);
-void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b8 non_zero);
-void _tp_arena_pop(_tp_arena* arena, tp_u64 size);
-void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos);
-void _tp_arena_clear(_tp_arena* arena);
+_tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
+    tp_u32 page_size = _tp_page_size();
 
-_tp_arena_temp _tp_arena_temp_begin(_tp_arena* arena);
-void _tp_arena_temp_end(_tp_arena_temp temp);
+    reserve_size = _TP_ALIGN_UP_POW2(reserve_size, page_size);
+    commit_size = _TP_ALIGN_UP_POW2(commit_size, page_size);
+
+    _tp_arena* arena = _tp_mem_reserve(reserve_size);
+
+    if (!_tp_mem_commit(arena, commit_size)) {
+        arena = NULL;
+    }
+
+    if (arena == NULL) {
+        TP_FATAL_ERROR("[term-plot fatal error] Failed to commit memory for arena");
+        return NULL;
+    }
+
+    arena->current = arena;
+    arena->prev = NULL;
+
+    arena->reserve_size = reserve_size;
+    arena->commit_size = commit_size;
+
+    arena->base_pos = 0;
+    arena->pos = _TP_ARENA_HEADER_SIZE;
+    arena->commit_pos = commit_size;
+
+    return arena;
+}
+
+void _tp_arena_destroy(_tp_arena* arena) {
+    _tp_arena* current = arena->current;
+
+    while (current != NULL) {
+        _tp_arena* prev = current->prev;
+        _tp_mem_release(current, current->reserve_size);
+
+        current = prev;
+    }
+}
+
+tp_u64 _tp_arena_get_pos(_tp_arena* arena) {
+    return arena->current->base_pos + arena->current->pos;
+}
+
+void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
+    void* out = NULL;
+
+    _tp_arena* current = arena->current;
+
+    tp_u64 pos_aligned = _TP_ALIGN_UP_POW2(current->pos, _TP_ARENA_ALIGN);
+    out = (tp_u8*)current + pos_aligned;
+    tp_u64 new_pos = pos_aligned + size;
+
+    if (new_pos > current->reserve_size) {
+        tp_u64 reserve_size = arena->reserve_size;
+        tp_u64 commit_size = arena->commit_size;
+
+        if (size + _TP_ARENA_HEADER_SIZE > reserve_size) {
+            tp_u32 page_size = _tp_page_size();
+
+            reserve_size = _TP_ALIGN_UP_POW2(
+                size + _TP_ARENA_HEADER_SIZE, page_size
+            );
+        }
+
+        _tp_arena* new_arena = _tp_arena_create(reserve_size, commit_size);
+        new_arena->base_pos = current->base_pos + current->reserve_size;
+
+        _tp_arena* prev_cur = current;
+        current = new_arena;
+        current->prev = prev_cur;
+        arena->current = current;
+
+        pos_aligned = _TP_ALIGN_UP_POW2(current->pos, _TP_ARENA_ALIGN);
+        out = (tp_u8*)current + pos_aligned;
+        new_pos = pos_aligned + size;
+    }
+
+    if (new_pos > current->commit_pos) {
+        tp_u64 new_commit_pos = new_pos;
+        new_commit_pos += current->commit_size - 1;
+        new_commit_pos -= new_commit_pos % current->commit_size;
+        new_commit_pos = _TP_MIN(new_commit_pos, current->reserve_size);
+
+        tp_u64 commit_size = new_commit_pos - current->commit_pos;
+
+        tp_u8* commit_pointer = (tp_u8*)current + current->commit_pos;
+
+        if (!_tp_mem_commit(commit_pointer, commit_size)) {
+            out = NULL;
+        } else {
+            current->commit_pos = new_commit_pos;
+        }
+    }
+
+    if (out == NULL) {
+        TP_FATAL_ERROR("[term-plot fatal error] Failed to allocate memory for arena");
+        return NULL;
+    }
+
+    current->pos = new_pos;
+
+    if (!non_zero) {
+        memset(out, 0, size);
+    }
+
+    return out;
+}
+
+void _tp_arena_pop(_tp_arena* arena, tp_u64 size) {
+    size = _TP_MIN(size, _tp_arena_get_pos(arena));
+
+    _tp_arena* current = arena->current;
+    while (current != NULL && size > current->pos) {
+        _tp_arena* prev = current->prev;
+
+        size -= current->pos;
+        _tp_mem_release(current, current->reserve_size);
+
+        current = prev;
+    }
+
+    arena->current = current;
+
+    size = _TP_MIN(current->pos - _TP_ARENA_HEADER_SIZE, size);
+    current->pos -= size;
+}
+
+void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos) {
+    tp_u64 cur_pos = _tp_arena_get_pos(arena);
+    
+    pos = _TP_MIN(pos, cur_pos);
+
+    _tp_arena_pop(arena, cur_pos - pos);
+}
+
+void _tp_arena_clear(_tp_arena* arena) {
+    _tp_arena_pop_to(arena, _TP_ARENA_HEADER_SIZE);
+}
+
+_tp_arena_temp _tp_arena_temp_begin(_tp_arena* arena) {
+    return (_tp_arena_temp) {
+        .arena = arena,
+        .start_pos = _tp_arena_get_pos(arena)
+    };
+}
+
+void _tp_arena_temp_end(_tp_arena_temp temp) {
+    _tp_arena_pop_to(temp.arena, temp.start_pos);
+}
 
 tp_string8 tp_str8_from_cstr(tp_u8* cstr) {
     tp_u8* start = cstr;
