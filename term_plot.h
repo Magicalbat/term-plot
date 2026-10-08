@@ -39,6 +39,8 @@ typedef struct {
 tp_string8 tp_str8_from_cstr(tp_u8* cstr);
 
 typedef enum {
+    // For a figure, `TP_RASTER_DEFAULT` will default to `TP_RASTER_BRAILLE`
+    // For axes, `TP_RASTER_DEFAULT` will default to the figure's setting
     TP_RASTER_DEFAULT = 0,
     TP_RASTER_BRAILLE,
     TP_RASTER_ASCII,
@@ -53,13 +55,34 @@ typedef enum {
     TP_AXES_DISPLAY_NO_YNUMS   = 0b0100000,
 } tp_axes_display_flags;
 
+typedef enum {
+    // Padding of 1 character
+    TP_PADDING_NORMAL = 0,
+
+    // No padding
+    TP_PADDING_NONE,
+
+    // Padding of 2 characters
+    TP_PADDING_LARGE,
+} tp_padding;
+
+#ifndef TP_MAX_SUBPLOT_ROWS 
+#   define TP_MAX_SUBPLOT_ROWS 16
+#endif
+
+#ifndef TP_MAX_SUBPLOT_COLS 
+#   define TP_MAX_SUBPLOT_COLS 16
+#endif
+
 typedef struct {
     // Number of rows of subplots
     // If `subplot_rows` is 0, the figure will default to 1 subplot row
+    // Must be less than or equal to `TP_MAX_SUBPLOT_ROWS`
     tp_u32 subplot_rows;
 
     // Number of columns of subplots
     // If `subplot_cols` is 0, the figure will default to 1 subplot column
+    // Must be less than or equal to `TP_MAX_SUBPLOT_COLS`
     tp_u32 subplot_cols;
 
     // Number of characters wide
@@ -68,6 +91,18 @@ typedef struct {
     // `char_width` does not fit within the current terminal window
     tp_u32 char_width;
 
+    // Array of `subplot_cols` elements that give the relative proportion of 
+    // each column of subplots
+    // All zeros will default to uniform sizing
+    // Each column gets a relative width of `width_ratios[i]/sum(width_ratios)`
+    tp_f64 width_ratios[TP_MAX_SUBPLOT_COLS];
+
+    // Array of `subplot_rows` elements that give the relative proportion of 
+    // each row of subplots
+    // All zeros will default to uniform sizing
+    // Each row gets a relative height of `height_ratios[i]/sum(height_ratios)`
+    tp_f64 height_ratios[TP_MAX_SUBPLOT_ROWS];
+
     // Number of characters high
     // 0 will default to the available terminal height
     // Dynamically showing the graph may result in a smaller graph if
@@ -75,6 +110,9 @@ typedef struct {
     tp_u32 char_height;
 
     tp_raster_type raster_type;
+
+    // Denotes the padding between axes
+    tp_padding axes_padding;
 
     tp_string8 title;
 } tp_figure_desc;
@@ -131,6 +169,19 @@ typedef struct {
     tp_string8 label;
 } tp_points_desc;
 
+typedef struct {
+    void* (*alloc_fn)(tp_u64 size, void* user_data);
+    void* user_data;
+} tp_allocator;
+
+typedef enum {
+    // Unix style
+    TP_NEWLINE_LF = 0,
+
+    // Windows style
+    TP_NEWLINE_CRLF,
+} tp_newline_style;
+
 typedef struct tp_figure tp_figure;
 
 // Creates a new figure for plotting
@@ -139,6 +190,7 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc);
 // Destroys any resources the figure is using
 void tp_end(tp_figure* fig);
 
+// Calls made to out of bounds axes will be ignored
 void tp_setup_axes(
     tp_figure* fig, tp_u32 arow, tp_u32 acol,
     const tp_axes_desc* axes_desc
@@ -147,12 +199,14 @@ void tp_setup_axes(
 void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points);
 void tp_plot_lines(tp_figure* fig, const tp_points_desc* points);
 
-// Size of the rendered utf8 stream in **bytes**
-tp_u64 tp_render_utf8_size(tp_figure* fig);
-
-// Renders the figure as a utf8 stream to the pointer `out`
-// `out` must be at least the size in bytes returned by `tp_render_utf8_size`
-void tp_render_utf8(tp_figure* fig, tp_u8* out);
+// Renders the current figure as a utf8 stream
+// If the `allocator` pointer is NULL, malloc will be used
+// Only one call to the `allocator->alloc` function will be made by the 
+// function, which means that you can use a linear allocator here
+tp_string8 tp_render_utf8(
+    tp_figure* fig, tp_newline_style newline_style,
+    const tp_allocator* allocator
+);
 
 // Prints out the current graph statically to standard out
 // If `dynamic` is true, the figure will take over the console, and there will 
@@ -186,7 +240,14 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
     } while (0)
 #endif
 
+#ifndef TP_WARN
+#   include <stdio.h>
+#   define TP_WARN(msg) fprintf(stderr, (msg))
+#endif
+
 #define _TP_MIN(a, b) ((a) < (b) ? (a) : (b))
+#define _TP_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define _TP_CLAMP(x, a, b) (_TP_MIN((b), _TP_MAX((x), (a))))
 
 #define _TP_ALIGN_UP_POW2(n, p) (((tp_u64)(n) + ((tp_u64)(p) - 1)) & (~((tp_u64)(p) - 1)))
 
@@ -244,7 +305,7 @@ tp_u32 _tp_page_size(void) {
     return si.dwPageSize;
 }
 
-#elif defined(__linux__)
+#elif defined(__unix__)
 
 #include <unistd.h>
 #include <sys/mman.h>
@@ -283,16 +344,10 @@ tp_u32 _tp_page_size(void) {
 
 #else
 
-#if !defined(TP_MALLOC) && !defined(TP_FREE)
-#   include <stdlib.h>
-#   define TP_MALLOC malloc
-#   define TP_FREE free
-#elif defined(TP_MALLOC) != defined(TP_FREE)
-#   error "You must define both TP_MALLOC and TP_FREE"
-#endif
+#include <stdlib.h>
 
 void* _tp_mem_reserve(tp_u64 size) {
-    return TP_MALLOC(size);
+    return malloc(size);
 }
 
 tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
@@ -312,7 +367,7 @@ tp_b32 _tp_mem_decommit(void* mem, tp_u64 size) {
 tp_b32 _tp_mem_release(void* mem, tp_u64 size) {
     (void)size;
 
-    TP_FREE(mem);
+    free(mem);
 
     return _TP_TRUE;
 }
@@ -367,7 +422,7 @@ _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
     }
 
     if (arena == NULL) {
-        TP_FATAL_ERROR("[term-plot fatal error] Failed to commit memory for arena");
+        TP_FATAL_ERROR("[term-plot Error] Failed to commit memory for arena");
         return NULL;
     }
 
@@ -451,7 +506,7 @@ void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
     }
 
     if (out == NULL) {
-        TP_FATAL_ERROR("[term-plot fatal error] Failed to allocate memory for arena");
+        TP_FATAL_ERROR("[term-plot Error] Failed to allocate memory for arena");
         return NULL;
     }
 
@@ -602,12 +657,17 @@ typedef struct tp_figure {
     tp_u32 subplot_rows;
     tp_u32 subplot_cols;
 
+    tp_f64* width_fractions;
+    tp_f64* height_fractions;
+
     // 0 will default to the available terminal width
     tp_u32 char_width;
     // 0 will default to the available terminal width
     tp_u32 char_height;
 
     tp_raster_type raster_type;
+
+    tp_padding axes_padding;
 
     tp_string8 title;
 
@@ -618,6 +678,18 @@ typedef struct tp_figure {
 tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
     tp_figure_desc desc = fig_desc == NULL ? (tp_figure_desc){ 0 } : *fig_desc;
 
+    if (
+        desc.subplot_rows > TP_MAX_SUBPLOT_ROWS || 
+        desc.subplot_cols > TP_MAX_SUBPLOT_COLS
+    ) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Clamping figure subplot rows and columns to maximum. "
+            "If this is an issue, consider defining `TP_MAX_SUBPLOT_ROWS` "
+            "and/or `TP_MAX_SUBPLOT_COLS` to a higher number."
+        );
+    }
+
     _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
 
     tp_figure* fig = _TP_PUSH_STRUCT(arena, tp_figure);
@@ -625,13 +697,16 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
     *fig = (tp_figure){
         .arena = arena,
 
-        .subplot_rows = _TP_MIN(desc.subplot_rows, 1),
-        .subplot_cols = _TP_MIN(desc.subplot_cols, 1),
+        .subplot_rows = _TP_CLAMP(desc.subplot_rows, 1, TP_MAX_SUBPLOT_ROWS),
+        .subplot_cols = _TP_CLAMP(desc.subplot_cols, 1, TP_MAX_SUBPLOT_COLS),
 
         .char_width = desc.char_width,
         .char_height = desc.char_height,
 
-        .raster_type = desc.raster_type,
+        .raster_type = desc.raster_type == TP_RASTER_DEFAULT ? 
+            TP_RASTER_BRAILLE : desc.raster_type,
+
+        .axes_padding = desc.axes_padding,
 
         .title = _tp_str8_copy(arena, desc.title),
     };
@@ -639,6 +714,31 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
     fig->axes = _TP_PUSH_ARRAY(
         arena, _tp_axes, fig->subplot_rows * fig->subplot_cols
     );
+
+    fig->width_fractions = _TP_PUSH_ARRAY_NZ(arena, tp_f64, fig->subplot_cols);
+    fig->height_fractions = _TP_PUSH_ARRAY_NZ(arena, tp_f64, fig->subplot_rows);
+
+    tp_f64 width_ratio_sum = 0.0;
+    for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
+        width_ratio_sum += desc.width_ratios[i];
+    }
+
+    for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
+        fig->width_fractions[i] = 1.0 / (
+            width_ratio_sum == 0 ? (tp_f64)fig->subplot_cols : width_ratio_sum
+        );
+    }
+
+    tp_f64 height_ratio_sum = 0.0;
+    for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
+        height_ratio_sum += desc.height_ratios[i];
+    }
+
+    for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
+        fig->height_fractions[i] = 1.0 / (
+            height_ratio_sum == 0 ? (tp_f64)fig->subplot_rows : height_ratio_sum
+        );
+    }
 
     return fig;
 }
@@ -655,6 +755,11 @@ void tp_setup_axes(
 ) {
     if (fig == NULL) { return; }
     if (arow >= fig->subplot_rows || acol >= fig->subplot_cols) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Ignoring out of bounds call to `tp_setup_axes`."
+        );
+
         return;
     }
 
@@ -664,7 +769,9 @@ void tp_setup_axes(
 
     axes->char_width = desc.char_width;
     axes->char_height = desc.char_height;
-    axes->raster_type = desc.raster_type;
+    axes->raster_type = desc.raster_type == TP_RASTER_DEFAULT ?
+        fig->raster_type : desc.raster_type;
+
     axes->display_flags = desc.display_flags;
 
     axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
