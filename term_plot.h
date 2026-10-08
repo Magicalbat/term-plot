@@ -81,13 +81,13 @@ typedef struct {
 
 typedef struct {
     // Number of characters wide
-    // 0 will default to the available terminal width
+    // 0 will default to fill the available width
     // Dynamically showing the graph may result in a smaller graph if
     // `char_width` does not fit within the current terminal window
     tp_u32 char_width;
 
     // Number of characters high
-    // 0 will default to the available terminal height
+    // 0 will default to fill the available height
     // Dynamically showing the graph may result in a smaller graph if
     // `char_height` does not fit within the current terminal window
     tp_u32 char_height;
@@ -129,7 +129,7 @@ typedef struct {
     tp_f64* ys;
 
     tp_string8 label;
-} tp_plot_desc;
+} tp_points_desc;
 
 typedef struct tp_figure tp_figure;
 
@@ -139,15 +139,13 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc);
 // Destroys any resources the figure is using
 void tp_end(tp_figure* fig);
 
-// Each of the subplot axes can only be setup once
-// That is, all subsequent calls to `tp_axes_setup` of the same subplot cell
-// will be ignored
-void tp_axes_setup(
+void tp_setup_axes(
     tp_figure* fig, tp_u32 arow, tp_u32 acol,
     const tp_axes_desc* axes_desc
 );
 
-void tp_plot(tp_figure* fig, const tp_plot_desc* plot_desc);
+void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points);
+void tp_plot_lines(tp_figure* fig, const tp_points_desc* points);
 
 // Size of the rendered utf8 stream in **bytes**
 tp_u64 tp_render_utf8_size(tp_figure* fig);
@@ -194,6 +192,11 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 #define _TP_KiB(n) ((tp_u64)(n) << 10)
 #define _TP_MiB(n) ((tp_u64)(n) << 20)
+
+#define _TP_SLL_PUSH_BACK(f, l, n) ((f) == NULL ? \
+    ((f) = (l) = (n)) :                       \
+    ((l)->next = (n), (l) = (n)),             \
+    ((n)->next = NULL))                       \
 
 #define _TP_TRUE 1
 #define _TP_FALSE 1
@@ -348,8 +351,8 @@ typedef struct {
 
 #define _TP_PUSH_STRUCT(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_FALSE)
 #define _TP_PUSH_STRUCT_NZ(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_TRUE)
-#define _TP_PUSH_ARRAY(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (u64)(n), _TP_FALSE)
-#define _TP_PUSH_ARRAY_NZ(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (u64)(n), _TP_TRUE)
+#define _TP_PUSH_ARRAY(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (tp_u64)(n), _TP_FALSE)
+#define _TP_PUSH_ARRAY_NZ(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (tp_u64)(n), _TP_TRUE)
 
 _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
     tp_u32 page_size = _tp_page_size();
@@ -503,6 +506,12 @@ void _tp_arena_temp_end(_tp_arena_temp temp) {
     _tp_arena_pop_to(temp.arena, temp.start_pos);
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// 
+// String stuff
+// 
+////////////////////////////////////////////////////////////////////////////////
+
 tp_string8 tp_str8_from_cstr(tp_u8* cstr) {
     tp_u8* start = cstr;
 
@@ -512,6 +521,223 @@ tp_string8 tp_str8_from_cstr(tp_u8* cstr) {
         .str = start,
         .size = (tp_u64)(cstr - start)
     };
+}
+
+tp_string8 _tp_str8_copy(_tp_arena* arena, tp_string8 str) {
+    if (str.size == 0) {
+        return (tp_string8){ 0 };
+    }
+
+    tp_string8 out = {
+        .str = _TP_PUSH_ARRAY_NZ(arena, tp_u8, str.size),
+        .size = str.size,
+    };
+
+    memcpy(out.str, str.str, out.size);
+
+    return out;
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Figure implementation
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+typedef enum {
+    _TP_DRAW_NONE = 0,
+    _TP_DRAW_SCATTER,
+    _TP_DRAW_LINES,
+} _tp_draw_cmd_kind;
+
+typedef struct {
+    tp_u32 num_points;
+
+        tp_f64* xs;
+        tp_f64* ys;
+
+        tp_string8 label;
+} _tp_draw_pointslike;
+
+typedef struct _tp_draw_cmd {
+    struct _tp_draw_cmd* next;
+
+    _tp_draw_cmd_kind kind;
+
+    union {
+        _tp_draw_pointslike scatter;
+        _tp_draw_pointslike lines;
+    } info;
+} _tp_draw_cmd;
+
+typedef struct {
+    // 0 will default to fill the available width
+    tp_u32 char_width;
+    // 0 will default to fill the available height
+    tp_u32 char_height;
+
+    tp_raster_type raster_type;
+    tp_axes_display_flags display_flags;
+
+    tp_string8 xlabel;
+    tp_string8 ylabel;
+    tp_string8 title;
+
+    // If both `xmin` and `xmax` are 0, the x bounds will fit to the data
+    tp_f64 xmin;
+    tp_f64 xmax;
+
+    // If both `ymin` and `ymax` are 0, the y bounds will fit to the data
+    tp_f64 ymin;
+    tp_f64 ymax;
+
+    _tp_draw_cmd* first_draw;
+    _tp_draw_cmd* last_draw;
+} _tp_axes;
+
+typedef struct tp_figure {
+    _tp_arena* arena;
+
+    tp_u32 subplot_rows;
+    tp_u32 subplot_cols;
+
+    // 0 will default to the available terminal width
+    tp_u32 char_width;
+    // 0 will default to the available terminal width
+    tp_u32 char_height;
+
+    tp_raster_type raster_type;
+
+    tp_string8 title;
+
+    // Stored row-major
+    _tp_axes* axes;
+} tp_figure;
+
+tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
+    tp_figure_desc desc = fig_desc == NULL ? (tp_figure_desc){ 0 } : *fig_desc;
+
+    _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
+
+    tp_figure* fig = _TP_PUSH_STRUCT(arena, tp_figure);
+
+    *fig = (tp_figure){
+        .arena = arena,
+
+        .subplot_rows = _TP_MIN(desc.subplot_rows, 1),
+        .subplot_cols = _TP_MIN(desc.subplot_cols, 1),
+
+        .char_width = desc.char_width,
+        .char_height = desc.char_height,
+
+        .raster_type = desc.raster_type,
+
+        .title = _tp_str8_copy(arena, desc.title),
+    };
+
+    fig->axes = _TP_PUSH_ARRAY(
+        arena, _tp_axes, fig->subplot_rows * fig->subplot_cols
+    );
+
+    return fig;
+}
+
+void tp_end(tp_figure* fig) {
+    if (fig == NULL) { return; }
+
+    _tp_arena_destroy(fig->arena);
+}
+
+void tp_setup_axes(
+    tp_figure* fig, tp_u32 arow, tp_u32 acol,
+    const tp_axes_desc* axes_desc
+) {
+    if (fig == NULL) { return; }
+    if (arow >= fig->subplot_rows || acol >= fig->subplot_cols) {
+        return;
+    }
+
+    tp_axes_desc desc = axes_desc == NULL ? (tp_axes_desc){ 0 } : *axes_desc;
+
+    _tp_axes* axes = fig->axes + (arow * fig->subplot_cols + acol);
+
+    axes->char_width = desc.char_width;
+    axes->char_height = desc.char_height;
+    axes->raster_type = desc.raster_type;
+    axes->display_flags = desc.display_flags;
+
+    axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
+    axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
+    axes->title = _tp_str8_copy(fig->arena, desc.title);
+
+    axes->xmin = desc.xmin;
+    axes->xmax = desc.xmax;
+    axes->ymin = desc.ymin;
+    axes->ymax = desc.ymax;
+}
+
+void _tp_plot_pointslike(
+    tp_figure* fig, _tp_draw_cmd_kind kind,
+    const tp_points_desc* points_desc
+) {
+    if (fig == NULL || points_desc == NULL) { return; }
+    if (
+        points_desc->axes_row >= fig->subplot_rows ||
+        points_desc->axes_col >= fig->subplot_cols
+    ) {
+        return;
+    }
+
+    _tp_draw_pointslike pointslike = (_tp_draw_pointslike){
+        .num_points = points_desc->num_points,
+
+        .xs = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, points_desc->num_points),
+        .ys = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, points_desc->num_points),
+
+        .label = _tp_str8_copy(fig->arena, points_desc->label),
+    };
+
+    if (points_desc->xs == NULL) {
+        for (tp_u32 i = 0; i < pointslike.num_points; i++) {
+            pointslike.xs[i] = (tp_f64)i;
+        }
+    } else {
+        memcpy(
+            pointslike.xs, points_desc->xs,
+            sizeof(tp_f64) * pointslike.num_points
+        );
+    }
+
+    memcpy(
+        pointslike.ys, points_desc->ys,
+        sizeof(tp_f64) * pointslike.num_points
+    );
+
+    _tp_draw_cmd* cmd = _TP_PUSH_STRUCT_NZ(fig->arena, _tp_draw_cmd);
+
+    *cmd = (_tp_draw_cmd){
+        .kind = kind,
+
+        // Note(Ian) this is definitely a bit of a hack, but if all the infos
+        // are in the same union, than any `_tp_draw_pointslike` in that union
+        // will occupy the same place in memory
+        .info.scatter = pointslike
+    };
+
+    _tp_axes* axes = fig->axes + (
+        points_desc->axes_row * fig->subplot_cols + points_desc->axes_col
+    );
+
+    _TP_SLL_PUSH_BACK(axes->first_draw, axes->last_draw, cmd);
+}
+
+void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points) {
+    _tp_plot_pointslike(fig, _TP_DRAW_SCATTER, points);
+}
+
+void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
+    _tp_plot_pointslike(fig, _TP_DRAW_LINES, points);
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
