@@ -118,18 +118,6 @@ typedef struct {
 } tp_figure_desc;
 
 typedef struct {
-    // Number of characters wide
-    // 0 will default to fill the available width
-    // Dynamically showing the graph may result in a smaller graph if
-    // `char_width` does not fit within the current terminal window
-    tp_u32 char_width;
-
-    // Number of characters high
-    // 0 will default to fill the available height
-    // Dynamically showing the graph may result in a smaller graph if
-    // `char_height` does not fit within the current terminal window
-    tp_u32 char_height;
-
     tp_raster_type raster_type;
     tp_axes_display_flags display_flags;
 
@@ -199,10 +187,18 @@ void tp_setup_axes(
 void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points);
 void tp_plot_lines(tp_figure* fig, const tp_points_desc* points);
 
+// Enables utf8 output for the current terminal 
+void tp_enable_utf8_output(void);
+
 // Renders the current figure as a utf8 stream
 // If the `allocator` pointer is NULL, malloc will be used
 // Only one call to the `allocator->alloc` function will be made by the 
 // function, which means that you can use a linear allocator here
+//
+// Note: If you are printing this out to the console in any fashion, it may not
+// appear correctly unless you call `tp_enable_utf8_output()`. The function
+// `tp_show(...)` does this automatically. You could also of course ues the 
+// ascii rasterizer to obviate the need of utf8 output support.
 tp_string8 tp_render_utf8(
     tp_figure* fig, tp_newline_style newline_style,
     const tp_allocator* allocator
@@ -230,6 +226,7 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 #ifdef TERM_PLOT_IMPLEMENTATION
 
 #include <stddef.h>
+#include <string.h> // memset, memcpy
 
 #ifndef TP_FATAL_ERROR
 #   include <stdio.h>
@@ -262,9 +259,13 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 #define _TP_TRUE 1
 #define _TP_FALSE 1
 
+typedef struct {
+    tp_u32 width, height;
+} _tp_termsize;
+
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Platform Memory Allocation
+// Platform dependent functionality
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -274,6 +275,10 @@ tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
 tp_b32 _tp_mem_release(void* mem, tp_u64 size);
 tp_u32 _tp_page_size(void);
 
+_tp_termsize _tp_get_termsize(void);
+
+static _tp_termsize _tp_def_termsize = { .width = 80, .height = 24 };
+
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -281,6 +286,10 @@ tp_u32 _tp_page_size(void);
 #endif
 
 #include <Windows.h>
+
+void tp_enable_utf8_output(void) {
+    SetConsoleOutputCP(CP_UTF8);
+}
 
 void* _tp_mem_reserve(tp_u64 size) {
     return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE);
@@ -305,10 +314,50 @@ tp_u32 _tp_page_size(void) {
     return si.dwPageSize;
 }
 
+_tp_termsize _tp_get_termsize(void) {
+    CONSOLE_SCREEN_BUFFER_INFO console_info = { 0 };
+    HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    if (!GetConsoleScreenBufferInfo(
+        stdout_handle, &console_info
+    )) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Failed to get terminal size, returning default"
+        );
+
+        return _tp_def_termsize;
+    }
+
+    SMALL_RECT win_rect = console_info.srWindow;
+
+    tp_u32 width = (tp_u32)(win_rect.Right - win_rect.Left + 1);
+    tp_u32 height = (tp_u32)(win_rect.Bottom - win_rect.Top + 1);
+
+    return (_tp_termsize){
+        .width = width,
+        .height = height
+    };
+}
+
 #elif defined(__unix__)
 
 #include <unistd.h>
+#include <locale.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+
+void tp_enable_utf8_output(void) {
+    char* res = setlocale(LC_ALL, "C.UTF-8");
+
+    if (res == NULL) {
+        res = setlocale(LC_ALL, "en_US.UTF-8");
+    }
+
+    if (res == NULL) {
+        res = setlocale(LC_ALL, "");
+    }
+}
 
 void* _tp_mem_reserve(tp_u64 size) {
     void* out = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -340,6 +389,26 @@ tp_b32 _tp_mem_release(void* ptr, tp_u64 size) {
 
 tp_u32 _tp_page_size(void) {
     return (tp_u32)sysconf(_SC_PAGESIZE);
+}
+
+_tp_termsize _tp_get_termsize(void) {
+    struct winsize w = { 0 };
+
+    tp_i32 ret = ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+
+    if (ret >= 0) {
+        return (_tp_termsize) {
+            .width = w.ws_col,
+            .height = w.ws_row,
+        };
+    }
+
+    TP_WARN(
+        "[term-plot Warning] "
+        "Failed to get terminal size, returning default"
+    );
+
+    return _tp_def_termsize;
 }
 
 #else
@@ -627,11 +696,6 @@ typedef struct _tp_draw_cmd {
 } _tp_draw_cmd;
 
 typedef struct {
-    // 0 will default to fill the available width
-    tp_u32 char_width;
-    // 0 will default to fill the available height
-    tp_u32 char_height;
-
     tp_raster_type raster_type;
     tp_axes_display_flags display_flags;
 
@@ -767,8 +831,6 @@ void tp_setup_axes(
 
     _tp_axes* axes = fig->axes + (arow * fig->subplot_cols + acol);
 
-    axes->char_width = desc.char_width;
-    axes->char_height = desc.char_height;
     axes->raster_type = desc.raster_type == TP_RASTER_DEFAULT ?
         fig->raster_type : desc.raster_type;
 
@@ -791,8 +853,15 @@ void _tp_plot_pointslike(
     if (fig == NULL || points_desc == NULL) { return; }
     if (
         points_desc->axes_row >= fig->subplot_rows ||
-        points_desc->axes_col >= fig->subplot_cols
+        points_desc->axes_col >= fig->subplot_cols ||
+        points_desc->ys == NULL
     ) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Ignoring invalid plotting command. Check for out of bounds axes "
+            "and/or invalid data pointers"
+        );
+
         return;
     }
 
