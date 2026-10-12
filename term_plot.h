@@ -39,39 +39,26 @@ typedef struct {
 tp_string8 tp_str8_from_cstr(tp_u8* cstr);
 
 typedef enum {
-    // For a figure, `TP_RASTER_DEFAULT` will default to `TP_RASTER_BRAILLE`
-    // For axes, `TP_RASTER_DEFAULT` will default to the figure's setting
-    TP_RASTER_DEFAULT = 0,
-    TP_RASTER_BRAILLE,
+    TP_RASTER_BRAILLE = 0,
     TP_RASTER_ASCII,
 } tp_raster_type;
 
 typedef enum {
-    TP_AXES_DISPLAY_LEGEND     = 0b0000001,
-    TP_AXES_DISPLAY_ORIGIN     = 0b0000010,
-    TP_AXES_DISPLAY_NO_XTICKS  = 0b0000100,
-    TP_AXES_DISPLAY_NO_YTICKS  = 0b0001000,
-    TP_AXES_DISPLAY_NO_XNUMS   = 0b0010000,
-    TP_AXES_DISPLAY_NO_YNUMS   = 0b0100000,
-} tp_axes_display_flags;
-
-typedef enum {
-    // Padding of 1 character
-    TP_PADDING_NORMAL = 0,
-
-    // No padding
-    TP_PADDING_NONE,
-
-    // Padding of 2 characters
-    TP_PADDING_LARGE,
-} tp_padding;
+    TP_AXES_LEGEND     = 0b00000001,
+    TP_AXES_NO_XAXIS   = 0b00000010,
+    TP_AXES_NO_YAXIS   = 0b00000100,
+    TP_AXES_NO_XTICKS  = 0b00001000,
+    TP_AXES_NO_YTICKS  = 0b00010000,
+    TP_AXES_NO_XNUMS   = 0b00100000,
+    TP_AXES_NO_YNUMS   = 0b01000000,
+} tp_axes_flags;
 
 #ifndef TP_MAX_SUBPLOT_ROWS 
-#   define TP_MAX_SUBPLOT_ROWS 16
+#   define TP_MAX_SUBPLOT_ROWS 8
 #endif
 
 #ifndef TP_MAX_SUBPLOT_COLS 
-#   define TP_MAX_SUBPLOT_COLS 16
+#   define TP_MAX_SUBPLOT_COLS 8
 #endif
 
 typedef struct {
@@ -111,15 +98,22 @@ typedef struct {
 
     tp_raster_type raster_type;
 
-    // Denotes the padding between axes
-    tp_padding axes_padding;
+    // If true, no color will be output
+    tp_b8 monochrome;
+
+    // Padding between axes defaults to 1 character
+    // Set this value to use `custom_padding` instead
+    tp_b8 override_padding;
+
+    // This will only take effect if `override_padding` is true
+    // Defines the number of characters of padding between axes
+    tp_u32 custom_padding;
 
     tp_string8 title;
 } tp_figure_desc;
 
 typedef struct {
-    tp_raster_type raster_type;
-    tp_axes_display_flags display_flags;
+    tp_axes_flags flags;
 
     tp_string8 xlabel;
     tp_string8 ylabel;
@@ -191,14 +185,15 @@ void tp_plot_lines(tp_figure* fig, const tp_points_desc* points);
 void tp_enable_utf8_output(void);
 
 // Renders the current figure as a utf8 stream
-// If the `allocator` pointer is NULL, malloc will be used
+// 
+// If `allocator` is NULL, malloc will be used
 // Only one call to the `allocator->alloc` function will be made by the 
 // function, which means that you can use a linear allocator here
 //
 // Note: If you are printing this out to the console in any fashion, it may not
 // appear correctly unless you call `tp_enable_utf8_output()`. The function
 // `tp_show(...)` does this automatically. You could also of course ues the 
-// ascii rasterizer to obviate the need of utf8 output support.
+// ascii rasterizer to avoid utf8 as a whole
 tp_string8 tp_render_utf8(
     tp_figure* fig, tp_newline_style newline_style,
     const tp_allocator* allocator
@@ -261,7 +256,11 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 typedef struct {
     tp_u32 width, height;
-} _tp_termsize;
+} _tp_dim;
+
+typedef struct {
+    tp_u32 x, y, w, h;
+} _tp_rect;
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
@@ -275,9 +274,9 @@ tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
 tp_b32 _tp_mem_release(void* mem, tp_u64 size);
 tp_u32 _tp_page_size(void);
 
-_tp_termsize _tp_get_termsize(void);
+_tp_dim _tp_get_termsize(void);
 
-static _tp_termsize _tp_def_termsize = { .width = 80, .height = 24 };
+static _tp_dim _tp_def_termsize = { .width = 80, .height = 24 };
 
 #if defined(_WIN32)
 
@@ -314,7 +313,7 @@ tp_u32 _tp_page_size(void) {
     return si.dwPageSize;
 }
 
-_tp_termsize _tp_get_termsize(void) {
+_tp_dim _tp_get_termsize(void) {
     CONSOLE_SCREEN_BUFFER_INFO console_info = { 0 };
     HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -334,7 +333,7 @@ _tp_termsize _tp_get_termsize(void) {
     tp_u32 width = (tp_u32)(win_rect.Right - win_rect.Left + 1);
     tp_u32 height = (tp_u32)(win_rect.Bottom - win_rect.Top + 1);
 
-    return (_tp_termsize){
+    return (_tp_dim){
         .width = width,
         .height = height
     };
@@ -391,13 +390,13 @@ tp_u32 _tp_page_size(void) {
     return (tp_u32)sysconf(_SC_PAGESIZE);
 }
 
-_tp_termsize _tp_get_termsize(void) {
+_tp_dim _tp_get_termsize(void) {
     struct winsize w = { 0 };
 
     tp_i32 ret = ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
 
     if (ret >= 0) {
-        return (_tp_termsize) {
+        return (_tp_dim) {
             .width = w.ws_col,
             .height = w.ws_row,
         };
@@ -696,8 +695,7 @@ typedef struct _tp_draw_cmd {
 } _tp_draw_cmd;
 
 typedef struct {
-    tp_raster_type raster_type;
-    tp_axes_display_flags display_flags;
+    tp_axes_flags flags;
 
     tp_string8 xlabel;
     tp_string8 ylabel;
@@ -731,7 +729,9 @@ typedef struct tp_figure {
 
     tp_raster_type raster_type;
 
-    tp_padding axes_padding;
+    tp_b8 monochrome;
+
+    tp_u32 padding;
 
     tp_string8 title;
 
@@ -766,11 +766,10 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
 
         .char_width = desc.char_width,
         .char_height = desc.char_height,
+        .raster_type = desc.raster_type,
+        .monochrome = desc.monochrome,
 
-        .raster_type = desc.raster_type == TP_RASTER_DEFAULT ? 
-            TP_RASTER_BRAILLE : desc.raster_type,
-
-        .axes_padding = desc.axes_padding,
+        .padding = desc.override_padding ? desc.custom_padding : 1,
 
         .title = _tp_str8_copy(arena, desc.title),
     };
@@ -831,10 +830,7 @@ void tp_setup_axes(
 
     _tp_axes* axes = fig->axes + (arow * fig->subplot_cols + acol);
 
-    axes->raster_type = desc.raster_type == TP_RASTER_DEFAULT ?
-        fig->raster_type : desc.raster_type;
-
-    axes->display_flags = desc.display_flags;
+    axes->flags = desc.flags;
 
     axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
     axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
@@ -914,6 +910,68 @@ void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points) {
 
 void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
     _tp_plot_pointslike(fig, _TP_DRAW_LINES, points);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Layout + Rasterization
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+// Number of characters to display for the y axis numbers
+#ifndef TP_YNUM_CHARS
+#   define TP_YNUM_CHARS 6
+#endif
+
+// Each set of axes in the subplot column of the figure could potentially have
+// different display settings and flags. This function calculates the minimum
+// width required to display the given subplot column
+tp_u32 _tp_min_axes_width(tp_figure* fig, tp_u32 subplot_col) {
+    if (subplot_col >= fig->subplot_cols) { return 0; }
+
+    // Because each axes can have different settings, we actually need to find
+    // the max of all the mins
+    tp_u32 max_width = 1;
+
+    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+        // label + y nums + y axis + graph area
+        tp_u32 cur_width = 1 + TP_YNUM_CHARS + 1 + 1;
+
+        _tp_axes* axes = fig->axes + (row * fig->subplot_cols + subplot_col);
+
+        if (axes->ylabel.size == 0) { cur_width--; }
+        if (axes->flags & TP_AXES_NO_YNUMS) { cur_width -= TP_YNUM_CHARS; }
+        if (axes->flags & TP_AXES_NO_YAXIS) { cur_width--; }
+
+        max_width = _TP_MAX(max_width, cur_width);
+    }
+
+    return max_width;
+}
+
+// Each set of axes in the subplot row of the figure could potentially have
+// different display settings and flags. This function calculates the minimum
+// height required to display the given subplot row
+tp_u32 _tp_min_axes_height(tp_figure* fig, tp_u32 subplot_row) {
+    if (subplot_row >= fig->subplot_rows) { return 0; }
+
+    // Because each axes can have different settings, we actually need to find
+    // the max of all the mins
+    tp_u32 max_height = 1;
+
+    for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+        // label / x scale + x nums + x axis + graph area + y scale
+        tp_u32 cur_height = 1 + 1 + 1 + 1 + 1;
+
+        _tp_axes* axes = fig->axes + (subplot_row * fig->subplot_cols + col);
+
+        if (axes->flags & TP_AXES_NO_XNUMS) { cur_height--; }
+        if (axes->flags & TP_AXES_NO_XAXIS) { cur_height--; }
+
+        max_height = _TP_MAX(max_height, cur_height);
+    }
+
+    return max_height;
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
