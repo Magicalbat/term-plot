@@ -78,6 +78,14 @@ typedef struct {
     // `char_width` does not fit within the current terminal window
     tp_u32 char_width;
 
+    // Number of characters high
+    // 0 will default to the available terminal height
+    // Dynamically showing the graph may result in a smaller graph if
+    // `char_height` does not fit within the current terminal window
+    tp_u32 char_height;
+
+    tp_string8 title;
+
     // Array of `subplot_cols` elements that give the relative proportion of 
     // each column of subplots
     // All zeros will default to uniform sizing
@@ -90,26 +98,27 @@ typedef struct {
     // Each row gets a relative height of `height_ratios[i]/sum(height_ratios)`
     tp_f64 height_ratios[TP_MAX_SUBPLOT_ROWS];
 
-    // Number of characters high
-    // 0 will default to the available terminal height
-    // Dynamically showing the graph may result in a smaller graph if
-    // `char_height` does not fit within the current terminal window
-    tp_u32 char_height;
-
     tp_raster_type raster_type;
 
     // If true, no color will be output
     tp_b8 monochrome;
 
-    // Padding between axes defaults to 1 character
-    // Set this value to use `custom_padding` instead
+    // Set this value to use `custom_padding`
     tp_b8 override_padding;
 
-    // This will only take effect if `override_padding` is true
+    // Set this value to use `custom_margin`
+    tp_b8 override_margin;
+
     // Defines the number of characters of padding between axes
+    // This will only take effect if `override_padding` is true
+    // Padding by default is 1 character
     tp_u32 custom_padding;
 
-    tp_string8 title;
+    // Defines the number of characters around the entire figure in each 
+    // direction.
+    // This will only take effect if `override_margin` is true
+    // Margin by default is 1
+    tp_u32 custom_margin;
 } tp_figure_desc;
 
 typedef struct {
@@ -222,6 +231,7 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 #include <stddef.h>
 #include <string.h> // memset, memcpy
+#include <math.h>
 
 #ifndef TP_FATAL_ERROR
 #   include <stdio.h>
@@ -260,7 +270,11 @@ typedef struct {
 
 typedef struct {
     tp_u32 x, y, w, h;
-} _tp_rect;
+} _tp_rect_u32;
+
+typedef struct {
+    tp_u32 start, size;
+} _tp_range_u32;
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
@@ -731,7 +745,11 @@ typedef struct tp_figure {
 
     tp_b8 monochrome;
 
+    // Padding between axes
     tp_u32 padding;
+
+    // Margin around entire figure
+    tp_u32 margin;
 
     tp_string8 title;
 
@@ -767,9 +785,11 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
         .char_width = desc.char_width,
         .char_height = desc.char_height,
         .raster_type = desc.raster_type,
+
         .monochrome = desc.monochrome,
 
         .padding = desc.override_padding ? desc.custom_padding : 1,
+        .margin = desc.override_margin ? desc.custom_margin : 1,
 
         .title = _tp_str8_copy(arena, desc.title),
     };
@@ -914,7 +934,7 @@ void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Layout + Rasterization
+// Layout
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -923,10 +943,28 @@ void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
 #   define TP_YNUM_CHARS 6
 #endif
 
+// One for the text, one for padding
+// Used for figure and axes titles
+#define _TP_TITLE_ROWS 2
+
+typedef struct {
+    // Total range in x for each subplot column
+    _tp_range_u32 x_ranges[TP_MAX_SUBPLOT_COLS];
+
+    // Range in x taken up specifically by the inner graph
+    _tp_range_u32 x_drawables[TP_MAX_SUBPLOT_COLS];
+
+    // Total range in y for each subplot row
+    _tp_range_u32 y_ranges[TP_MAX_SUBPLOT_ROWS];
+
+    // Range in y taken up specifically by the inner graph
+    _tp_range_u32 y_drawables[TP_MAX_SUBPLOT_ROWS];
+} _tp_fig_layout;
+
 // Each set of axes in the subplot column of the figure could potentially have
 // different display settings and flags. This function calculates the minimum
 // width required to display the given subplot column
-tp_u32 _tp_min_axes_width(tp_figure* fig, tp_u32 subplot_col) {
+tp_u32 _tp_fixed_axes_width(tp_figure* fig, tp_u32 subplot_col) {
     if (subplot_col >= fig->subplot_cols) { return 0; }
 
     // Because each axes can have different settings, we actually need to find
@@ -934,8 +972,8 @@ tp_u32 _tp_min_axes_width(tp_figure* fig, tp_u32 subplot_col) {
     tp_u32 max_width = 1;
 
     for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
-        // label + y nums + y axis + graph area
-        tp_u32 cur_width = 1 + TP_YNUM_CHARS + 1 + 1;
+        // (y label & pad) + y nums + y axis
+        tp_u32 cur_width = 2 + TP_YNUM_CHARS + 1;
 
         _tp_axes* axes = fig->axes + (row * fig->subplot_cols + subplot_col);
 
@@ -952,7 +990,7 @@ tp_u32 _tp_min_axes_width(tp_figure* fig, tp_u32 subplot_col) {
 // Each set of axes in the subplot row of the figure could potentially have
 // different display settings and flags. This function calculates the minimum
 // height required to display the given subplot row
-tp_u32 _tp_min_axes_height(tp_figure* fig, tp_u32 subplot_row) {
+tp_u32 _tp_fixed_axes_height(tp_figure* fig, tp_u32 subplot_row) {
     if (subplot_row >= fig->subplot_rows) { return 0; }
 
     // Because each axes can have different settings, we actually need to find
@@ -960,8 +998,8 @@ tp_u32 _tp_min_axes_height(tp_figure* fig, tp_u32 subplot_row) {
     tp_u32 max_height = 1;
 
     for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
-        // label / x scale + x nums + x axis + graph area + y scale
-        tp_u32 cur_height = 1 + 1 + 1 + 1 + 1;
+        // (x label & x scale & pad) + x nums + x axis + (title & y scale & pad)
+        tp_u32 cur_height = 2 + 1 + 1 + _TP_TITLE_ROWS;
 
         _tp_axes* axes = fig->axes + (subplot_row * fig->subplot_cols + col);
 
@@ -972,6 +1010,134 @@ tp_u32 _tp_min_axes_height(tp_figure* fig, tp_u32 subplot_row) {
     }
 
     return max_height;
+}
+
+// Fills in `_tp_fig_layout` with the current layout given `draw_area` 
+// This function ignores fig->char_width/char_height, so callers need to 
+// compute `draw_area` externally from the figure size and current terminal 
+// size
+// 
+// Returns true if there is enough space
+tp_b32 _tp_layout_axes(
+    tp_figure* fig, _tp_fig_layout* layout, _tp_rect_u32 draw_area
+) {
+    memset(layout, 0, sizeof(_tp_fig_layout));
+
+    tp_u32 fixed_x = 2 * fig->margin + (fig->subplot_cols - 1) * fig->padding;
+    tp_u32 fixed_y = 2 * fig->margin + (fig->subplot_rows - 1) * fig->padding;
+
+    if (fig->title.size > 0) {
+        fixed_y += _TP_TITLE_ROWS; 
+    }
+
+    if (draw_area.w <= fixed_x || draw_area.h <= fixed_y) {
+        return _TP_FALSE;
+    }
+
+    tp_u32 remaining_width = draw_area.w - fixed_x;
+    tp_u32 remaining_height = draw_area.h - fixed_y;
+
+    tp_u32 fixed_widths[TP_MAX_SUBPLOT_COLS] = { 0 };
+    tp_u32 fixed_heights[TP_MAX_SUBPLOT_COLS] = { 0 };
+
+    for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+        fixed_widths[col] = _tp_fixed_axes_width(fig, col);
+    }
+
+    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+        fixed_widths[row] = _tp_fixed_axes_height(fig, row);
+    }
+
+    tp_u32 widths[TP_MAX_SUBPLOT_COLS] = { 0 };
+    tp_u32 heights[TP_MAX_SUBPLOT_COLS] = { 0 };
+
+    tp_u32 used_width = 0;
+    for (tp_u32 x = 0; x < fig->subplot_cols; x++) {
+        widths[x] = (tp_u32)round(
+            (tp_f64)remaining_width * fig->width_fractions[x]
+        );
+        used_width += widths[x];
+
+        if (widths[x] <= fixed_widths[x]) {
+            return _TP_FALSE;
+        }
+    }
+
+    // Ensure we do not go over width (insurance for float imprecision)
+    while (used_width > remaining_width) {
+        tp_u32 col = 0;
+
+        while (col < fig->subplot_cols && widths[col] == fixed_widths[col]) {
+            col++;
+        }
+
+        if (col >= fig->subplot_cols) {
+            return _TP_FALSE;
+        }
+
+        widths[col]--;
+        used_width--;
+    }
+
+    tp_u32 used_height = 0;
+    for (tp_u32 y = 0; y < fig->subplot_rows; y++) {
+        heights[y] = (tp_u32)round(
+            (tp_f64)remaining_height * fig->height_fractions[y]
+        );
+        used_height += heights[y];
+
+        if (heights[y] < fixed_heights[y]) {
+            return _TP_FALSE;
+        }
+    }
+
+    // Ensure we do not go over height (insurance for float imprecision)
+    while (used_height > remaining_height) {
+        tp_u32 row = 0;
+
+        while (row < fig->subplot_rows && heights[row] == fixed_heights[row]) {
+            row++;
+        }
+
+        if (row >= fig->subplot_cols) {
+            return _TP_FALSE;
+        }
+
+        heights[row]--;
+        used_height--;
+    }
+
+    tp_u32 cur_x = fig->margin;
+    for (tp_u32 x = 0; x < fig->subplot_cols; x++) {
+        layout->x_ranges[x] = (_tp_range_u32){
+            .start = cur_x,
+            .size = widths[x],
+        };
+
+        layout->x_drawables[x] = (_tp_range_u32){
+            .start = cur_x + fixed_widths[x],
+            .size = widths[x] - fixed_widths[x]
+        };
+
+        cur_x += widths[x] + fig->padding;
+    }
+
+    tp_u32 cur_y = fig->margin;
+    for (tp_u32 y = 0; y < fig->subplot_rows; y++) {
+        layout->y_ranges[y] = (_tp_range_u32){
+            .start = cur_y,
+            .size = heights[y],
+        };
+
+        layout->y_drawables[y] = (_tp_range_u32){
+            .start = cur_y + _TP_TITLE_ROWS,
+            .size = heights[y] - fixed_heights[y],
+        };
+
+        cur_y += heights[y] + fig->padding;
+    }
+
+    return _TP_TRUE;
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
