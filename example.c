@@ -3,16 +3,65 @@
 #include "term_plot.h"
 
 #include <stdio.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef uint8_t u8;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+#define ROWS 1
+#define COLS 2
+
+#define WIDTH 80
+#define HEIGHT 40
 
 int main(void) {
-    _tp_termsize s0 = _tp_get_termsize();
+    tp_figure* fig = tp_begin(&(tp_figure_desc){
+        .subplot_rows = ROWS,
+        .subplot_cols = COLS,
 
-    printf("%u x %u\n", s0.width, s0.height);
+        .override_padding = true,
+        .custom_padding = 2,
 
-    getchar();
+        .width_ratios = { 1, 3 }
+    });
 
-    _tp_termsize s1 = _tp_get_termsize();
-    printf("%u x %u\n", s1.width, s1.height);
+    tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
+        .flags = TP_AXES_NO_YNUMS | TP_AXES_NO_XNUMS,
+    });
+
+    _tp_fig_layout layout = { 0 };
+    _tp_layout_axes(fig, &layout, (_tp_rect_u32){ .w = WIDTH, .h = HEIGHT });
+
+    u8 raster[WIDTH * HEIGHT];
+    memset(raster, '.', WIDTH * HEIGHT);
+
+    for (u32 col = 0; col < COLS; col++) {
+        for (u32 row = 0; row < ROWS; row++) {
+            u32 idx = col + row * COLS;
+
+            _tp_rect_u32 drawable = layout.drawable[idx];
+            for (u32 y = drawable.y; y < drawable.y + drawable.h; y++) {
+                for (u32 x = drawable.x; x < drawable.x + drawable.w; x++) {
+                    raster[x + y * WIDTH] = '#';
+                }
+            }
+
+            _tp_rect_u32 graphable = layout.graphable[idx];
+            for (u32 y = graphable.y; y < graphable.y + graphable.h; y++) {
+                for (u32 x = graphable.x; x < graphable.x + graphable.w; x++) {
+                    raster[x + y * WIDTH] = '-';
+                }
+            }
+        }
+    }
+
+    for (u32 y = 0; y < HEIGHT; y++) {
+        printf("%.*s\n", WIDTH, raster + y * WIDTH);
+    }
+
+    tp_end(fig);
 
     return 0;
 }

@@ -266,7 +266,7 @@ void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
 
 typedef struct {
     tp_u32 width, height;
-} _tp_dim;
+} _tp_dim_u32;
 
 typedef struct {
     tp_u32 x, y, w, h;
@@ -288,9 +288,9 @@ tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
 tp_b32 _tp_mem_release(void* mem, tp_u64 size);
 tp_u32 _tp_page_size(void);
 
-_tp_dim _tp_get_termsize(void);
+_tp_dim_u32 _tp_get_termsize(void);
 
-static _tp_dim _tp_def_termsize = { .width = 80, .height = 24 };
+static _tp_dim_u32 _tp_def_termsize = { .width = 80, .height = 24 };
 
 #if defined(_WIN32)
 
@@ -327,7 +327,7 @@ tp_u32 _tp_page_size(void) {
     return si.dwPageSize;
 }
 
-_tp_dim _tp_get_termsize(void) {
+_tp_dim_u32 _tp_get_termsize(void) {
     CONSOLE_SCREEN_BUFFER_INFO console_info = { 0 };
     HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -347,7 +347,7 @@ _tp_dim _tp_get_termsize(void) {
     tp_u32 width = (tp_u32)(win_rect.Right - win_rect.Left + 1);
     tp_u32 height = (tp_u32)(win_rect.Bottom - win_rect.Top + 1);
 
-    return (_tp_dim){
+    return (_tp_dim_u32){
         .width = width,
         .height = height
     };
@@ -404,13 +404,13 @@ tp_u32 _tp_page_size(void) {
     return (tp_u32)sysconf(_SC_PAGESIZE);
 }
 
-_tp_dim _tp_get_termsize(void) {
+_tp_dim_u32 _tp_get_termsize(void) {
     struct winsize w = { 0 };
 
     tp_i32 ret = ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
 
     if (ret >= 0) {
-        return (_tp_dim) {
+        return (_tp_dim_u32) {
             .width = w.ws_col,
             .height = w.ws_row,
         };
@@ -806,10 +806,16 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
         width_ratio_sum += desc.width_ratios[i];
     }
 
-    for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
-        fig->width_fractions[i] = 1.0 / (
-            width_ratio_sum == 0 ? (tp_f64)fig->subplot_cols : width_ratio_sum
-        );
+    if (width_ratio_sum == 0) {
+        tp_f64 def = 1.0 / (tp_f64)fig->subplot_cols;
+
+        for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
+            fig->width_fractions[i] = def; 
+        }
+    } else {
+        for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
+            fig->width_fractions[i] = desc.width_ratios[i] / width_ratio_sum;
+        }
     }
 
     tp_f64 height_ratio_sum = 0.0;
@@ -817,10 +823,16 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
         height_ratio_sum += desc.height_ratios[i];
     }
 
-    for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
-        fig->height_fractions[i] = 1.0 / (
-            height_ratio_sum == 0 ? (tp_f64)fig->subplot_rows : height_ratio_sum
-        );
+    if (height_ratio_sum == 0) {
+        tp_f64 def = 1.0 / (tp_f64)fig->subplot_rows;
+
+        for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
+            fig->height_fractions[i] = def; 
+        }
+    } else {
+        for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
+            fig->height_fractions[i] = desc.height_ratios[i] / height_ratio_sum;
+        }
     }
 
     return fig;
@@ -948,68 +960,57 @@ void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
 #define _TP_TITLE_ROWS 2
 
 typedef struct {
-    // Total range in x for each subplot column
-    _tp_range_u32 x_ranges[TP_MAX_SUBPLOT_COLS];
+    // Total drawable area
+    // Stored row-major, only the first (fig->subplot_rows * fig->subplot_cols)
+    // elements are used
+    _tp_rect_u32 drawable[TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS];
 
-    // Range in x taken up specifically by the inner graph
-    _tp_range_u32 x_drawables[TP_MAX_SUBPLOT_COLS];
-
-    // Total range in y for each subplot row
-    _tp_range_u32 y_ranges[TP_MAX_SUBPLOT_ROWS];
-
-    // Range in y taken up specifically by the inner graph
-    _tp_range_u32 y_drawables[TP_MAX_SUBPLOT_ROWS];
+    // Area of the actual graph
+    // Stored row-major, only the first (fig->subplot_rows * fig->subplot_cols)
+    // elements are used
+    _tp_rect_u32 graphable[TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS];
 } _tp_fig_layout;
 
-// Each set of axes in the subplot column of the figure could potentially have
-// different display settings and flags. This function calculates the minimum
-// width required to display the given subplot column
-tp_u32 _tp_fixed_axes_width(tp_figure* fig, tp_u32 subplot_col) {
-    if (subplot_col >= fig->subplot_cols) { return 0; }
+typedef struct {
+    tp_u32 top, bottom, left, right;
+} _tp_fixed_size;
 
-    // Because each axes can have different settings, we actually need to find
-    // the max of all the mins
-    tp_u32 max_width = 1;
+// When doing layout, some parts of the figure are allowed to grow and other 
+// are fixed. This function calculates the fixed dimensions for a given set of
+// axes in the figure
+_tp_fixed_size _tp_axes_fixed_size(
+    tp_figure* fig,
+    tp_u32 subplot_row, tp_u32 subplot_col
+) {
+    if (
+        subplot_row >= fig->subplot_rows ||
+        subplot_col >= fig->subplot_cols
+    ) {
+        return (_tp_fixed_size){ 0 };
+    }
 
-    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+    tp_u32 axes_index = subplot_row * fig->subplot_cols + subplot_col;
+    _tp_axes* axes = fig->axes + axes_index;
+
+    _tp_fixed_size size = {
         // (y label & pad) + y nums + y axis
-        tp_u32 cur_width = 2 + TP_YNUM_CHARS + 1;
+        .left = 2 + TP_YNUM_CHARS + 1,
 
-        _tp_axes* axes = fig->axes + (row * fig->subplot_cols + subplot_col);
+        // (title & y scale & pad)
+        .top = _TP_TITLE_ROWS,
 
-        if (axes->ylabel.size == 0) { cur_width--; }
-        if (axes->flags & TP_AXES_NO_YNUMS) { cur_width -= TP_YNUM_CHARS; }
-        if (axes->flags & TP_AXES_NO_YAXIS) { cur_width--; }
+        // (x label & x scale & pad) + x nums + x axis
+        .bottom = 2 + 1 + 1,
+    };
 
-        max_width = _TP_MAX(max_width, cur_width);
-    }
+    if (axes->ylabel.size == 0) { size.left--; }
+    if (axes->flags & TP_AXES_NO_YNUMS) { size.left -= TP_YNUM_CHARS; }
+    if (axes->flags & TP_AXES_NO_YAXIS) { size.left--; }
 
-    return max_width;
-}
+    if (axes->flags & TP_AXES_NO_XNUMS) { size.bottom--; }
+    if (axes->flags & TP_AXES_NO_XAXIS) { size.bottom--; }
 
-// Each set of axes in the subplot row of the figure could potentially have
-// different display settings and flags. This function calculates the minimum
-// height required to display the given subplot row
-tp_u32 _tp_fixed_axes_height(tp_figure* fig, tp_u32 subplot_row) {
-    if (subplot_row >= fig->subplot_rows) { return 0; }
-
-    // Because each axes can have different settings, we actually need to find
-    // the max of all the mins
-    tp_u32 max_height = 1;
-
-    for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
-        // (x label & x scale & pad) + x nums + x axis + (title & y scale & pad)
-        tp_u32 cur_height = 2 + 1 + 1 + _TP_TITLE_ROWS;
-
-        _tp_axes* axes = fig->axes + (subplot_row * fig->subplot_cols + col);
-
-        if (axes->flags & TP_AXES_NO_XNUMS) { cur_height--; }
-        if (axes->flags & TP_AXES_NO_XAXIS) { cur_height--; }
-
-        max_height = _TP_MAX(max_height, cur_height);
-    }
-
-    return max_height;
+    return size;
 }
 
 // Fills in `_tp_fig_layout` with the current layout given `draw_area` 
@@ -1021,8 +1022,6 @@ tp_u32 _tp_fixed_axes_height(tp_figure* fig, tp_u32 subplot_row) {
 tp_b32 _tp_layout_axes(
     tp_figure* fig, _tp_fig_layout* layout, _tp_rect_u32 draw_area
 ) {
-    memset(layout, 0, sizeof(_tp_fig_layout));
-
     tp_u32 fixed_x = 2 * fig->margin + (fig->subplot_cols - 1) * fig->padding;
     tp_u32 fixed_y = 2 * fig->margin + (fig->subplot_rows - 1) * fig->padding;
 
@@ -1037,15 +1036,49 @@ tp_b32 _tp_layout_axes(
     tp_u32 remaining_width = draw_area.w - fixed_x;
     tp_u32 remaining_height = draw_area.h - fixed_y;
 
+    _tp_fixed_size fixed_sizes[TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS];
+
+    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+        for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+            tp_u32 idx = col + row * fig->subplot_cols;
+            fixed_sizes[idx] = _tp_axes_fixed_size(fig, row, col);
+        }
+    }
+
+    // Required fixed width for each columns
     tp_u32 fixed_widths[TP_MAX_SUBPLOT_COLS] = { 0 };
+
+    // Required fixed height for each row
     tp_u32 fixed_heights[TP_MAX_SUBPLOT_COLS] = { 0 };
 
     for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
-        fixed_widths[col] = _tp_fixed_axes_width(fig, col);
+        tp_u32 max_width = 0;
+
+        for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+            tp_u32 idx = col + row * fig->subplot_cols;
+
+            max_width = _TP_MAX(
+                max_width,
+                fixed_sizes[idx].left + fixed_sizes[idx].right
+            );
+        }
+
+        fixed_widths[col] = max_width;
     }
 
     for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
-        fixed_widths[row] = _tp_fixed_axes_height(fig, row);
+        tp_u32 max_height = 0;
+
+        for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+            tp_u32 idx = col + row * fig->subplot_cols;
+
+            max_height = _TP_MAX(
+                max_height,
+                fixed_sizes[idx].top + fixed_sizes[idx].bottom
+            );
+        }
+
+        fixed_heights[row] = max_height;
     }
 
     tp_u32 widths[TP_MAX_SUBPLOT_COLS] = { 0 };
@@ -1107,34 +1140,35 @@ tp_b32 _tp_layout_axes(
         used_height--;
     }
 
+    memset(layout, 0, sizeof(_tp_fig_layout));
+
     tp_u32 cur_x = fig->margin;
-    for (tp_u32 x = 0; x < fig->subplot_cols; x++) {
-        layout->x_ranges[x] = (_tp_range_u32){
-            .start = cur_x,
-            .size = widths[x],
-        };
+    for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+        tp_u32 cur_y = fig->margin;
 
-        layout->x_drawables[x] = (_tp_range_u32){
-            .start = cur_x + fixed_widths[x],
-            .size = widths[x] - fixed_widths[x]
-        };
+        for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+            tp_u32 idx = col + row * fig->subplot_rows;
 
-        cur_x += widths[x] + fig->padding;
-    }
+            layout->drawable[idx] = (_tp_rect_u32){
+                .x = cur_x,
+                .y = cur_y,
+                .w = widths[col],
+                .h = heights[row],
+            };
 
-    tp_u32 cur_y = fig->margin;
-    for (tp_u32 y = 0; y < fig->subplot_rows; y++) {
-        layout->y_ranges[y] = (_tp_range_u32){
-            .start = cur_y,
-            .size = heights[y],
-        };
+            _tp_fixed_size fs = fixed_sizes[idx];
+            
+            layout->graphable[idx] = (_tp_rect_u32){
+                .x = cur_x + fs.left,
+                .y = cur_y + fs.top,
+                .w = widths[col] - (fs.left + fs.right),
+                .h = heights[row] - (fs.top + fs.bottom),
+            };
 
-        layout->y_drawables[y] = (_tp_range_u32){
-            .start = cur_y + _TP_TITLE_ROWS,
-            .size = heights[y] - fixed_heights[y],
-        };
+            cur_y += heights[row] + fig->padding;
+        }
 
-        cur_y += heights[y] + fig->padding;
+        cur_x += widths[col] + fig->padding;
     }
 
     return _TP_TRUE;
