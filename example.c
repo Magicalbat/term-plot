@@ -32,7 +32,10 @@ int main(void) {
     });
 
     _tp_fig_layout layout = { 0 };
-    _tp_layout_axes(fig, &layout, (_tp_rect_u32){ .w = WIDTH, .h = HEIGHT });
+    _tp_layout_axes(fig, &layout, (_tp_rect_u32){
+        .x = 5, .y = 5,
+        .w = WIDTH - 5, .h = HEIGHT - 5,
+    });
 
     u8 raster[WIDTH * HEIGHT];
     memset(raster, '.', WIDTH * HEIGHT);

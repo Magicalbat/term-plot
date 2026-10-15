@@ -27,6 +27,10 @@ typedef float tp_f32;
 typedef double tp_f64;
 
 typedef struct {
+    tp_u8 r, g, b;
+} tp_rgb8;
+
+typedef struct {
     tp_u8* str;
 
     // Size in bytes, **NOT** codepoints
@@ -61,6 +65,8 @@ typedef enum {
 #   define TP_MAX_SUBPLOT_COLS 8
 #endif
 
+#define TP_MAX_SUBPLOTS (TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS)
+
 typedef struct {
     // Number of rows of subplots
     // If `subplot_rows` is 0, the figure will default to 1 subplot row
@@ -74,13 +80,13 @@ typedef struct {
 
     // Number of characters wide
     // 0 will default to the available terminal width
-    // Dynamically showing the graph may result in a smaller graph if
+    // Showing the graph interactively may result in a smaller graph if
     // `char_width` does not fit within the current terminal window
     tp_u32 char_width;
 
     // Number of characters high
     // 0 will default to the available terminal height
-    // Dynamically showing the graph may result in a smaller graph if
+    // Showing the graph interactively may result in a smaller graph if
     // `char_height` does not fit within the current terminal window
     tp_u32 char_height;
 
@@ -209,13 +215,14 @@ tp_string8 tp_render_utf8(
 );
 
 // Prints out the current graph statically to standard out
-// If `dynamic` is true, the figure will take over the console, and there will 
-// be keybinds to interact with the graph
-void tp_show(tp_figure* fig, tp_b8 dynamic);
+// If `interactive` is true, the figure will take control of the terminal 
+// window, and there will be keyboard and mouse controls to interact with the 
+// plots
+void tp_show(tp_figure* fig, tp_b8 interactive);
 
 // This is the same as `tp_show` followed by `tp_end`
 // Shows the figure and deletes it when done
-void tp_show_and_end(tp_figure* fig, tp_b8 dynamic);
+void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 
 #endif // TERM_PLOT_H_INCLUDE
 
@@ -946,7 +953,7 @@ void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Layout
+// Figure layout
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -963,12 +970,12 @@ typedef struct {
     // Total drawable area
     // Stored row-major, only the first (fig->subplot_rows * fig->subplot_cols)
     // elements are used
-    _tp_rect_u32 drawable[TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS];
+    _tp_rect_u32 drawable[TP_MAX_SUBPLOTS];
 
     // Area of the actual graph
     // Stored row-major, only the first (fig->subplot_rows * fig->subplot_cols)
     // elements are used
-    _tp_rect_u32 graphable[TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS];
+    _tp_rect_u32 graphable[TP_MAX_SUBPLOTS];
 } _tp_fig_layout;
 
 typedef struct {
@@ -1150,8 +1157,8 @@ tp_b32 _tp_layout_axes(
             tp_u32 idx = col + row * fig->subplot_rows;
 
             layout->drawable[idx] = (_tp_rect_u32){
-                .x = cur_x,
-                .y = cur_y,
+                .x = cur_x + draw_area.x,
+                .y = cur_y + draw_area.y,
                 .w = widths[col],
                 .h = heights[row],
             };
@@ -1159,8 +1166,8 @@ tp_b32 _tp_layout_axes(
             _tp_fixed_size fs = fixed_sizes[idx];
             
             layout->graphable[idx] = (_tp_rect_u32){
-                .x = cur_x + fs.left,
-                .y = cur_y + fs.top,
+                .x = cur_x + draw_area.x + fs.left,
+                .y = cur_y + draw_area.y + fs.top,
                 .w = widths[col] - (fs.left + fs.right),
                 .h = heights[row] - (fs.top + fs.bottom),
             };
@@ -1172,6 +1179,177 @@ tp_b32 _tp_layout_axes(
     }
 
     return _TP_TRUE;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Unicode Processing
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+
+static const tp_u8 _tp_utf8_lengths[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0
+};
+
+// Returns the number of unicode codepoints in the utf8 string
+// Will parse so long as the utf8 stream is valid
+tp_u32 _tp_utf8_cp_length(tp_string8 str) {
+    tp_u32 count = 0;
+    tp_u32 cur_len = 1;
+
+    // `cur_len` of 0 means an invalid utf8 stream, so just parse until then
+    for (tp_u64 i = 0; i < str.size && cur_len != 0; count++, i += cur_len) {
+        cur_len = _tp_utf8_lengths[str.str[i] >> 3];
+    }
+
+    return count;
+}
+
+// Will write up to `cap` codepoints to the utf32 stream in `out`
+// Stops writing if it encounters an invalid portion of the utf8 stream
+//
+// Returns the number of codepoints written
+tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
+    static const tp_u8 first_byte_masks[] = {
+        0, 0x7f, 0x1f, 0x0f, 0x07
+    };
+    static const tp_u8 final_shifts[] = {
+        0, 18, 12, 6, 0
+    };
+
+    tp_u32 out_pos = 0;
+    tp_u32 cur_len = 0;
+
+    for (
+        tp_u64 i = 0;
+        i < str.size && out_pos < cap; 
+        out_pos++, i += cur_len
+    ) {
+        tp_u8 first_byte = str.str[i];
+        cur_len = _tp_utf8_lengths[first_byte >> 3];
+
+        if (cur_len == 0 || i + cur_len > str.size) { break; }
+
+        tp_u32 codepoint = (tp_u32)(first_byte & first_byte_masks[cur_len]);
+        codepoint <<= 18;
+
+        switch (cur_len) {
+            case 4: codepoint |= ((tp_u32)str.str[i+3] & 0x3f);
+            // fallthrough
+            case 3: codepoint |= (((tp_u32)str.str[i+2] & 0x3f) << 6);
+            // fallthrough
+            case 2: codepoint |= (((tp_u32)str.str[i+1] & 0x3f) << 12);
+            default: break;
+        }
+
+        codepoint >>= final_shifts[cur_len];
+        out[out_pos] = codepoint;
+    }
+
+    return out_pos;
+}
+
+// Returns the size in bytes it would take to encode the utf32 stream as a 
+// utf8 stream
+//
+// This function assumes that the input is a valid utf32 stream, which should 
+// be fine because we only call this internally
+tp_u32 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
+    tp_u32 size = 0;
+
+    for (tp_u32 i = 0; i < len; i++) {
+        size += 1 +
+            (str[i] >= 0x80) +
+            (str[i] >= 0x800) +
+            (str[i] >= 0x10000);
+    }
+
+    return size;
+}
+
+// Encodes a single unicode codepoint to a utf8 stream
+//
+// This function assumes that the input is a valid utf32 stream, which should 
+// be fine because we only call this internally
+tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
+    tp_u32 size = 0;
+
+    if (codepoint <= 0x7f) {
+        out[0] = (tp_u8)(codepoint & 0xff);
+
+        size = 1;
+    } else if (codepoint <= 0x7ff) {
+        out[0] = (tp_u8)(0xc0 | (codepoint >> 6));
+        out[1] = (tp_u8)(0x80 | (codepoint & 0x3f));
+
+        size = 2;
+    } else if (codepoint <= 0xffff) {
+        out[0] = (tp_u8)(0xe0 | (codepoint >> 12));
+        out[1] = (tp_u8)(0x80 | ((codepoint >> 6) & 0x3f));
+        out[2] = (tp_u8)(0x80 | (codepoint & 0x3f));
+
+        size = 3;
+    } else if (codepoint <= 0x10fff) {
+        out[0] = (tp_u8)(0xf0 | (codepoint >> 18));
+        out[1] = (tp_u8)(0x80 | ((codepoint >> 12) & 0x3f));
+        out[2] = (tp_u8)(0x80 | ((codepoint >> 6) & 0x3f));
+        out[3] = (tp_u8)(0x80 | (codepoint & 0x3f));
+
+        size = 4;
+    }
+
+    return size;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Primary drawing
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+typedef struct {
+    tp_u32 width, height;
+
+    // UTF-32 grid of codepoints
+    // Row-major of size (width x height)
+    tp_u32* codepoints;
+
+    // Foreground colors
+    // Row-major of size (width x height)
+    tp_rgb8* fg_cols;
+
+    // Background colors
+    // Row-major of size (width x height)
+    tp_rgb8* bg_cols;
+} _tp_drawtarget;
+
+_tp_drawtarget _tp_drawtarget_create(_tp_arena* arena, _tp_dim_u32 dim) {
+    tp_u32 size = dim.width * dim.height;
+
+    _tp_drawtarget out = {
+        .width = dim.width,
+        .height = dim.height,
+
+        .codepoints = _TP_PUSH_ARRAY_NZ(arena, tp_u32, size),
+        .fg_cols = _TP_PUSH_ARRAY_NZ(arena, tp_rgb8, size),
+        .bg_cols = _TP_PUSH_ARRAY_NZ(arena, tp_rgb8, size),
+    };
+
+    for (tp_u32 i = 0; i < size; i++) {
+        out.codepoints[i] = (tp_u32)' ';
+    }
+
+    for (tp_u32 i = 0; i < size; i++) {
+        out.fg_cols[i] = (tp_rgb8){ 255, 255, 255 };
+    }
+
+    for (tp_u32 i = 0; i < size; i++) {
+        out.bg_cols[i] = (tp_rgb8){ 0, 0, 0 };
+    }
+
+    return out;
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
