@@ -10,11 +10,14 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
+typedef float f32;
+typedef double f64;
+
 #define ROWS 1
 #define COLS 2
 
-#define WIDTH 80
-#define HEIGHT 40
+#define WIDTH 60
+#define HEIGHT 20
 
 int main(void) {
     tp_figure* fig = tp_begin(&(tp_figure_desc){
@@ -27,6 +30,41 @@ int main(void) {
         .width_ratios = { 1, 3 }
     });
 
+    _tp_drawtarget dt = _tp_drawtarget_create(
+        fig->arena, (_tp_dim_u32){ WIDTH, HEIGHT }
+    );
+
+    tp_enable_utf8_output();
+
+    for (u32 y = 0; y < HEIGHT; y++) {
+        for (u32 x = 0; x < WIDTH; x++) {
+            u32 index = x + y * WIDTH;
+
+            if ((index % 4) <= 1) {
+                dt.codepoints[index] = (u32)'A' + index/4;
+                dt.bg_cols[index] = (tp_rgb8){
+                    0,
+                    (u8)((f32)x / WIDTH * 255.0f),
+                    (u8)((f32)y / HEIGHT * 255.0f),
+                };
+            } else {
+                dt.codepoints[index] = 0x2500 + index/4;
+                dt.fg_cols[index] = (tp_rgb8){
+                    0,
+                    (u8)((f32)x / WIDTH * 255.0f),
+                    (u8)((f32)y / HEIGHT * 255.0f),
+                };
+            }
+        }
+    }
+
+    u64 size = _tp_drawtarget_encode_size(&dt, TP_NEWLINE_LF, true);
+    u8* encoded = _TP_PUSH_ARRAY_NZ(fig->arena, u8, size);
+    _tp_drawtarget_encode(&dt, TP_NEWLINE_LF, true, encoded);
+    printf("%s\n", encoded);
+
+    // Layout testing
+    #if 0
     tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
         .flags = TP_AXES_NO_YNUMS | TP_AXES_NO_XNUMS,
     });
@@ -63,6 +101,7 @@ int main(void) {
     for (u32 y = 0; y < HEIGHT; y++) {
         printf("%.*s\n", WIDTH, raster + y * WIDTH);
     }
+    #endif
 
     tp_end(fig);
 

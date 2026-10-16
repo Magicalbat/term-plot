@@ -269,7 +269,7 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
     ((n)->next = NULL))                       \
 
 #define _TP_TRUE 1
-#define _TP_FALSE 1
+#define _TP_FALSE 0
 
 typedef struct {
     tp_u32 width, height;
@@ -652,7 +652,7 @@ void _tp_arena_temp_end(_tp_arena_temp temp) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// String stuff
+// String functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -682,6 +682,42 @@ tp_string8 _tp_str8_copy(_tp_arena* arena, tp_string8 str) {
     return out;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Color functions
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+#define _TP_ANSI_RESET "\x1b[0m"
+#define _TP_ANSI_FG_TEMP "\x1b[38;2;000;000;000m"
+#define _TP_ANSI_BG_TEMP "\x1b[48;2;000;000;000m"
+#define _TP_ANSI_COL_SIZE (sizeof(_TP_ANSI_FG_TEMP) - 1)
+
+tp_b32 _tp_rgb8_eq(tp_rgb8 a, tp_rgb8 b) {
+    return a.r == b.r && a.g == b.g && a.b == b.b;
+}
+
+// Writes the ANSI escape sequence to encode a color change to `col` in `out`
+// `out` must have `_TP_ANSI_COL_SIZE` bytes
+void _tp_ansi_from_rgb8(tp_rgb8 col, tp_b32 fg, tp_u8* out) {
+    if (fg) {
+        memcpy(out, _TP_ANSI_FG_TEMP, _TP_ANSI_COL_SIZE);
+    } else {
+        memcpy(out, _TP_ANSI_BG_TEMP, _TP_ANSI_COL_SIZE);
+    }
+
+    out[7] = '0' + col.r / 100;
+    out[8] = '0' + (col.r / 10) % 10;
+    out[9] = '0' + col.r % 10;
+
+    out[11] = '0' + col.g / 100;
+    out[12] = '0' + (col.g / 10) % 10;
+    out[13] = '0' + col.g % 10;
+
+    out[15] = '0' + col.b / 100;
+    out[16] = '0' + (col.b / 10) % 10;
+    out[17] = '0' + col.b % 10;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
@@ -1256,8 +1292,8 @@ tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
 //
 // This function assumes that the input is a valid utf32 stream, which should 
 // be fine because we only call this internally
-tp_u32 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
-    tp_u32 size = 0;
+tp_u64 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
+    tp_u64 size = 0;
 
     for (tp_u32 i = 0; i < len; i++) {
         size += 1 +
@@ -1305,7 +1341,7 @@ tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Primary drawing
+// Draw target functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1350,6 +1386,116 @@ _tp_drawtarget _tp_drawtarget_create(_tp_arena* arena, _tp_dim_u32 dim) {
     }
 
     return out;
+}
+
+// Returns the number of bytes it would take to encode the draw target
+tp_u64 _tp_drawtarget_encode_size(
+    _tp_drawtarget* dt,
+    tp_newline_style newline_style,
+    tp_b32 with_color
+) {
+    if (dt->width == 0 || dt->height == 0) {
+        return 0;
+    }
+
+    // Primary utf8 stream size
+    tp_u64 size = _tp_utf8_from_utf32_size(
+        dt->codepoints, dt->width * dt->height
+    );
+
+    // Newline size
+    size += (newline_style == TP_NEWLINE_LF ? 1 : 2) * (dt->height - 1);
+
+    // Ansi color sizes
+    if (with_color) {
+        // Setup size (foreground + background)
+        size += 2 * _TP_ANSI_COL_SIZE;
+
+        tp_rgb8 prev_fg = dt->fg_cols[0];
+        tp_rgb8 prev_bg = dt->bg_cols[0];
+
+        for (tp_u32 i = 1; i < dt->width * dt->height; i++) {
+            if (!_tp_rgb8_eq(prev_fg, dt->fg_cols[i])) {
+                size += _TP_ANSI_COL_SIZE;
+                prev_fg = dt->fg_cols[i];
+            }
+
+            if (!_tp_rgb8_eq(prev_bg, dt->bg_cols[i])) {
+                size += _TP_ANSI_COL_SIZE;
+                prev_bg = dt->bg_cols[i];
+            }
+        }
+
+        size += sizeof(_TP_ANSI_RESET) - 1;
+    }
+
+    return size;
+}
+
+// Encodes the drawtarget to a utf8 code with ansi codes
+void _tp_drawtarget_encode(
+    _tp_drawtarget* dt,
+    tp_newline_style newline_style,
+    tp_b32 with_color, tp_u8* out
+) {
+    if (dt->width == 0 || dt->height == 0) {
+        return;
+    }
+
+    tp_u64 pos = 0;
+
+    if (with_color) {
+        _tp_ansi_from_rgb8(dt->fg_cols[0], _TP_TRUE, out + pos);
+        pos += _TP_ANSI_COL_SIZE;
+
+        _tp_ansi_from_rgb8(dt->bg_cols[0], _TP_FALSE, out + pos);
+        pos += _TP_ANSI_COL_SIZE;
+    }
+
+    tp_rgb8 prev_fg = dt->fg_cols[0];
+    tp_rgb8 prev_bg = dt->bg_cols[0];
+
+    for (tp_u32 y = 0; y < dt->height; y++) {
+        for (tp_u32 x = 0; x < dt->width; x++) {
+            tp_u32 index = x + y * dt->width;
+
+            if (with_color) {
+                tp_rgb8 fg = dt->fg_cols[index];
+                if (!_tp_rgb8_eq(prev_fg, fg)) {
+                    _tp_ansi_from_rgb8(fg, _TP_TRUE, out + pos);
+                    pos += _TP_ANSI_COL_SIZE;
+                    prev_fg = fg;
+                }
+
+                tp_rgb8 bg = dt->bg_cols[index];
+                if (!_tp_rgb8_eq(prev_bg, bg)) {
+                    _tp_ansi_from_rgb8(bg, _TP_FALSE, out + pos);
+                    pos += _TP_ANSI_COL_SIZE;
+                    prev_bg = bg;
+                }
+            }
+
+            tp_u32 cp_len = _tp_utf8_encode(dt->codepoints[index], out + pos);
+            pos += cp_len;
+        }
+
+        if (y < dt->height - 1) {
+            switch (newline_style) {
+                case TP_NEWLINE_LF: {
+                    out[pos++] = '\n';
+                } break;
+
+                case TP_NEWLINE_CRLF: {
+                    out[pos++] = '\r';
+                    out[pos++] = '\n';
+                } break;
+            }
+        }
+    }
+
+    if (with_color) {
+        memcpy(out + pos, _TP_ANSI_RESET, sizeof(_TP_ANSI_RESET) - 1);
+    }
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
