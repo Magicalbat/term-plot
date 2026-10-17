@@ -45,6 +45,8 @@ tp_string8 tp_str8_from_cstr(tp_u8* cstr);
 typedef enum {
     TP_RASTER_BRAILLE = 0,
     TP_RASTER_ASCII,
+
+    _TP_RASTER_COUNT,
 } tp_raster_type;
 
 typedef enum {
@@ -734,10 +736,10 @@ typedef enum {
 typedef struct {
     tp_u32 num_points;
 
-        tp_f64* xs;
-        tp_f64* ys;
+    tp_f64* xs;
+    tp_f64* ys;
 
-        tp_string8 label;
+    tp_string8 label;
 } _tp_draw_pointslike;
 
 typedef struct _tp_draw_cmd {
@@ -1359,12 +1361,12 @@ typedef struct {
     // Background colors
     // Row-major of size (width x height)
     tp_rgb8* bg_cols;
-} _tp_drawtarget;
+} _tp_draw_target;
 
-_tp_drawtarget _tp_drawtarget_create(_tp_arena* arena, _tp_dim_u32 dim) {
+_tp_draw_target _tp_draw_target_create(_tp_arena* arena, _tp_dim_u32 dim) {
     tp_u32 size = dim.width * dim.height;
 
-    _tp_drawtarget out = {
+    _tp_draw_target out = {
         .width = dim.width,
         .height = dim.height,
 
@@ -1389,8 +1391,8 @@ _tp_drawtarget _tp_drawtarget_create(_tp_arena* arena, _tp_dim_u32 dim) {
 }
 
 // Returns the number of bytes it would take to encode the draw target
-tp_u64 _tp_drawtarget_encode_size(
-    _tp_drawtarget* dt,
+tp_u64 _tp_draw_target_encode_size(
+    _tp_draw_target* dt,
     tp_newline_style newline_style,
     tp_b32 with_color
 ) {
@@ -1432,9 +1434,9 @@ tp_u64 _tp_drawtarget_encode_size(
     return size;
 }
 
-// Encodes the drawtarget to a utf8 code with ansi codes
-void _tp_drawtarget_encode(
-    _tp_drawtarget* dt,
+// Encodes the draw_target to a utf8 code with ansi codes
+void _tp_draw_target_encode(
+    _tp_draw_target* dt,
     tp_newline_style newline_style,
     tp_b32 with_color, tp_u8* out
 ) {
@@ -1496,6 +1498,244 @@ void _tp_drawtarget_encode(
     if (with_color) {
         memcpy(out + pos, _TP_ANSI_RESET, sizeof(_TP_ANSI_RESET) - 1);
     }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Draw context functions
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+typedef struct {
+    tp_f64 xmin, xmax;
+    tp_f64 ymin, ymax;
+} _tp_axes_bounds;
+
+static const _tp_axes_bounds _tp_def_axes_bounds = {
+    .xmin = INFINITY, .xmax = -INFINITY,
+    .ymin = INFINITY, .ymax = -INFINITY,
+};
+
+typedef struct {
+    // Stored row-major, only the first (fig->subplot_rows * fig->subplot_cols)
+    // elements are used
+    _tp_axes_bounds bounds[TP_MAX_SUBPLOTS];
+} _tp_draw_context;
+
+_tp_axes_bounds _tp_pointslike_bounds(const _tp_draw_pointslike* pointslike) {
+    _tp_axes_bounds cur = _tp_def_axes_bounds;
+
+    for (tp_u32 i = 0; i < pointslike->num_points; i++) {
+        cur.xmin = _TP_MIN(cur.xmin, pointslike->xs[i]);
+        cur.xmax = _TP_MAX(cur.xmax, pointslike->xs[i]);
+
+        cur.ymin = _TP_MIN(cur.ymin, pointslike->ys[i]);
+        cur.ymax = _TP_MAX(cur.ymax, pointslike->ys[i]);
+    }
+
+    tp_f64 xdim = cur.xmax - cur.xmin;
+    tp_f64 ydim = cur.ymax - cur.ymin;
+
+    tp_f64 xmargin = xdim * 0.05;
+    tp_f64 ymargin = ydim * 0.05;
+
+    cur.xmin -= xmargin;
+    cur.xmax += xmargin;
+    cur.ymin -= ymargin;
+    cur.ymax += ymargin;
+
+    return cur;
+}
+
+void _tp_expand_bounds(_tp_axes_bounds* bounds, const _tp_draw_cmd* cmd) {
+    _tp_axes_bounds cur = _tp_def_axes_bounds;
+
+    switch (cmd->kind) {
+        case _TP_DRAW_NONE: break;
+
+        case _TP_DRAW_LINES: {
+            cur = _tp_pointslike_bounds(&cmd->info.lines);
+        } break;
+            
+        case _TP_DRAW_SCATTER: {
+            cur = _tp_pointslike_bounds(&cmd->info.scatter);
+        } break;
+    }
+
+    bounds->xmin = _TP_MIN(bounds->xmin, cur.xmin);
+    bounds->xmax = _TP_MAX(bounds->xmax, cur.xmax);
+    bounds->ymin = _TP_MIN(bounds->ymin, cur.ymin);
+    bounds->ymax = _TP_MAX(bounds->ymax, cur.ymax);
+}
+
+void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
+    for (tp_u32 i = 0; i < fig->subplot_rows * fig->subplot_cols; i++) {
+        _tp_axes* axes = fig->axes + i;
+
+        if (axes->first_draw == NULL) {
+            draw_context->bounds[i] = (_tp_axes_bounds){
+                .xmin = 0.0, .xmax = 1.0,
+                .ymin = 0.0, .ymax = 1.0,
+            };
+
+            continue;
+        }
+
+        draw_context->bounds[i] = _tp_def_axes_bounds;
+        for (
+            _tp_draw_cmd* cmd = axes->first_draw;
+            cmd != NULL; cmd = cmd->next
+        ) {
+            _tp_expand_bounds(&draw_context->bounds[i], cmd);
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Primary rendering functions
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+void _tp_draw_axes(
+    tp_figure* fig,
+    _tp_axes* axes, _tp_draw_target* dt, 
+    _tp_rect_u32 drawable, _tp_rect_u32 graphable,
+    _tp_axes_bounds bounds
+) {
+    static const tp_u32 origins[_TP_RASTER_COUNT] = {
+        [TP_RASTER_BRAILLE] = U'┗',
+        [TP_RASTER_ASCII] = 'o',
+    };
+
+    static const tp_u32 x_bars[_TP_RASTER_COUNT] = {
+        [TP_RASTER_BRAILLE] = U'━',
+        [TP_RASTER_ASCII] = '|',
+    };
+    
+    static const tp_u32 y_bars[_TP_RASTER_COUNT] = {
+        [TP_RASTER_BRAILLE] = U'┃',
+        [TP_RASTER_ASCII] = '|',
+    };
+
+    static const tp_u32 y_ticks[_TP_RASTER_COUNT] = {
+        [TP_RASTER_BRAILLE] = U'┨',
+        [TP_RASTER_ASCII] = '+',
+    };
+
+    static const tp_u32 x_ticks[_TP_RASTER_COUNT] = {
+        [TP_RASTER_BRAILLE] = U'┯',
+        [TP_RASTER_ASCII] = '+',
+    };
+
+    tp_raster_type rt = fig->raster_type;
+
+    tp_u32 origin = origins[rt];
+    tp_u32 x_bar = x_bars[rt];
+    tp_u32 y_bar = y_bars[rt];
+    tp_u32 x_tick = x_ticks[rt];
+    tp_u32 y_tick = y_ticks[rt];
+
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        tp_u32 index = (graphable.x - 1) + (graphable.y + ly) * dt->width;
+
+        dt->codepoints[index] = (ly % 4) == 0 ? y_tick : y_bar;
+    }
+
+    for (tp_u32 lx = 0; lx < graphable.w + 1; lx++) {
+        tp_u32 index = (graphable.x - 1 + lx) + (graphable.y + graphable.h) * dt->width;
+
+        dt->codepoints[index] = (lx % 4) == 0 ? x_tick : x_bar;
+    }
+
+    tp_u32 o_index = (graphable.x - 1) + (graphable.y + graphable.h) * dt->width; 
+
+    dt->codepoints[o_index] = origin;
+
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+
+            dt->codepoints[index] = U' ';
+            dt->fg_cols[index] = (tp_rgb8){ 150, 150, 150 };
+        }
+    }
+}
+
+void _tp_draw_figure(
+    tp_figure* fig, _tp_draw_target* dt,
+    _tp_fig_layout* layout, _tp_draw_context* context,
+    _tp_rect_u32 area
+) {
+    // TODO: render figure title
+
+    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+        for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+            tp_u32 index = col + row * fig->subplot_cols;
+
+            _tp_draw_axes(
+                fig, fig->axes + index, dt,
+                layout->drawable[index], layout->graphable[index],
+                context->bounds[index]
+            );
+        }
+    }
+}
+
+tp_string8 tp_render_utf8(
+    tp_figure* fig, tp_newline_style newline_style,
+    const tp_allocator* allocator
+) {
+    tp_string8 out = { 0 };
+
+    _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
+
+    _tp_dim_u32 fig_size = { fig->char_width, fig->char_height };
+    if (fig_size.width == 0 && fig_size.height == 0) {
+        fig_size = _tp_get_termsize();
+    }
+
+    _tp_rect_u32 draw_area = {
+        .w = fig_size.width,
+        .h = fig_size.height,
+    };
+
+    _tp_draw_target draw_target = _tp_draw_target_create(
+        temp_arena.arena, fig_size
+    );
+
+    _tp_fig_layout layout;
+    _tp_layout_axes(fig, &layout, draw_area);
+
+    _tp_draw_context draw_context = { 0 };
+    _tp_compute_bounds(fig, &draw_context);
+
+    _tp_draw_figure(fig, &draw_target, &layout, &draw_context, draw_area);
+
+    tp_u64 rendered_size = _tp_draw_target_encode_size(
+        &draw_target, newline_style, !fig->monochrome
+    );
+
+    if (allocator == NULL) {
+        out.str = malloc(rendered_size);
+    } else {
+        out.str = allocator->alloc_fn(rendered_size, allocator->user_data);
+    }
+
+    if (out.str == NULL) {
+        goto end;
+    }
+
+    out.size = rendered_size;
+
+    _tp_draw_target_encode(
+        &draw_target, newline_style,
+        !fig->monochrome, out.str
+    );
+
+end:
+    _tp_arena_temp_end(temp_arena);
+    return out;
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION
