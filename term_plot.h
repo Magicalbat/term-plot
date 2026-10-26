@@ -92,6 +92,14 @@ typedef struct {
     // `char_height` does not fit within the current terminal window
     tp_u32 char_height;
 
+    // An offset applied after calculating the base figure width
+    // This is so that you can implicity graph something like (term_width - 2)
+    tp_i32 char_width_offset;
+
+    // An offset applied after calculating the base figure height
+    // This is so that you can implicity graph something like (term_height - 2)
+    tp_i32 char_height_offset;
+
     tp_string8 title;
 
     // Array of `subplot_cols` elements that give the relative proportion of 
@@ -654,6 +662,128 @@ void _tp_arena_temp_end(_tp_arena_temp temp) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
+// Unicode Processing
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+
+static const tp_u8 _tp_utf8_lengths[] = {
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0
+};
+
+// Returns the number of unicode codepoints in the utf8 string
+// Will parse so long as the utf8 stream is valid
+tp_u32 _tp_utf32_from_utf8_size(tp_string8 str) {
+    tp_u32 count = 0;
+    tp_u32 cur_len = 1;
+
+    // `cur_len` of 0 means an invalid utf8 stream, so just parse until then
+    for (tp_u64 i = 0; i < str.size && cur_len != 0; count++, i += cur_len) {
+        cur_len = _tp_utf8_lengths[str.str[i] >> 3];
+    }
+
+    return count;
+}
+
+// Will write up to `cap` codepoints to the utf32 stream in `out`
+// Stops writing if it encounters an invalid portion of the utf8 stream
+//
+// Returns the number of codepoints written
+tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
+    static const tp_u8 first_byte_masks[] = {
+        0, 0x7f, 0x1f, 0x0f, 0x07
+    };
+    static const tp_u8 final_shifts[] = {
+        0, 18, 12, 6, 0
+    };
+
+    tp_u32 out_pos = 0;
+    tp_u32 cur_len = 0;
+
+    for (
+        tp_u64 i = 0;
+        i < str.size && out_pos < cap; 
+        out_pos++, i += cur_len
+    ) {
+        tp_u8 first_byte = str.str[i];
+        cur_len = _tp_utf8_lengths[first_byte >> 3];
+
+        if (cur_len == 0 || i + cur_len > str.size) { break; }
+
+        tp_u32 codepoint = (tp_u32)(first_byte & first_byte_masks[cur_len]);
+        codepoint <<= 18;
+
+        switch (cur_len) {
+            case 4: codepoint |= ((tp_u32)str.str[i+3] & 0x3f);
+            // fallthrough
+            case 3: codepoint |= (((tp_u32)str.str[i+2] & 0x3f) << 6);
+            // fallthrough
+            case 2: codepoint |= (((tp_u32)str.str[i+1] & 0x3f) << 12);
+            default: break;
+        }
+
+        codepoint >>= final_shifts[cur_len];
+        out[out_pos] = codepoint;
+    }
+
+    return out_pos;
+}
+
+// Returns the size in bytes it would take to encode the utf32 stream as a 
+// utf8 stream
+//
+// This function assumes that the input is a valid utf32 stream, which should 
+// be fine because we only call this internally
+tp_u64 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
+    tp_u64 size = 0;
+
+    for (tp_u32 i = 0; i < len; i++) {
+        size += 1 +
+            (str[i] >= 0x80) +
+            (str[i] >= 0x800) +
+            (str[i] >= 0x10000);
+    }
+
+    return size;
+}
+
+// Encodes a single unicode codepoint to a utf8 stream
+//
+// This function assumes that the input is a valid utf32 stream, which should 
+// be fine because we only call this internally
+tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
+    tp_u32 size = 0;
+
+    if (codepoint <= 0x7f) {
+        out[0] = (tp_u8)(codepoint & 0xff);
+
+        size = 1;
+    } else if (codepoint <= 0x7ff) {
+        out[0] = (tp_u8)(0xc0 | (codepoint >> 6));
+        out[1] = (tp_u8)(0x80 | (codepoint & 0x3f));
+
+        size = 2;
+    } else if (codepoint <= 0xffff) {
+        out[0] = (tp_u8)(0xe0 | (codepoint >> 12));
+        out[1] = (tp_u8)(0x80 | ((codepoint >> 6) & 0x3f));
+        out[2] = (tp_u8)(0x80 | (codepoint & 0x3f));
+
+        size = 3;
+    } else if (codepoint <= 0x10fff) {
+        out[0] = (tp_u8)(0xf0 | (codepoint >> 18));
+        out[1] = (tp_u8)(0x80 | ((codepoint >> 12) & 0x3f));
+        out[2] = (tp_u8)(0x80 | ((codepoint >> 6) & 0x3f));
+        out[3] = (tp_u8)(0x80 | (codepoint & 0x3f));
+
+        size = 4;
+    }
+
+    return size;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
 // String functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
@@ -682,6 +812,14 @@ tp_string8 _tp_str8_copy(_tp_arena* arena, tp_string8 str) {
     memcpy(out.str, str.str, out.size);
 
     return out;
+}
+
+// Note(Ian) I know there are a million things incorrect with assuming the
+// number of codepoints is the width of a string of text, but I am not about to
+// put half of HarfBuzz in the silly terminal plotting library to accurately 
+// center text
+tp_u32 _tp_str8_width(tp_string8 str) {
+    return _tp_utf32_from_utf8_size(str);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -786,6 +924,9 @@ typedef struct tp_figure {
     // 0 will default to the available terminal width
     tp_u32 char_height;
 
+    tp_i32 width_offset;
+    tp_i32 height_offset;
+
     tp_raster_type raster_type;
 
     tp_b8 monochrome;
@@ -829,6 +970,10 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
 
         .char_width = desc.char_width,
         .char_height = desc.char_height,
+
+        .width_offset = desc.char_width_offset,
+        .height_offset = desc.char_height_offset,
+
         .raster_type = desc.raster_type,
 
         .monochrome = desc.monochrome,
@@ -1129,60 +1274,25 @@ tp_b32 _tp_layout_axes(
     tp_u32 widths[TP_MAX_SUBPLOT_COLS] = { 0 };
     tp_u32 heights[TP_MAX_SUBPLOT_COLS] = { 0 };
 
-    tp_u32 used_width = 0;
+    // TODO: better distribution of area than flooring
     for (tp_u32 x = 0; x < fig->subplot_cols; x++) {
-        widths[x] = (tp_u32)round(
+        widths[x] = (tp_u32)floor(
             (tp_f64)remaining_width * fig->width_fractions[x]
         );
-        used_width += widths[x];
 
         if (widths[x] <= fixed_widths[x]) {
             return _TP_FALSE;
         }
     }
 
-    // Ensure we do not go over width (insurance for float imprecision)
-    while (used_width > remaining_width) {
-        tp_u32 col = 0;
-
-        while (col < fig->subplot_cols && widths[col] == fixed_widths[col]) {
-            col++;
-        }
-
-        if (col >= fig->subplot_cols) {
-            return _TP_FALSE;
-        }
-
-        widths[col]--;
-        used_width--;
-    }
-
-    tp_u32 used_height = 0;
     for (tp_u32 y = 0; y < fig->subplot_rows; y++) {
-        heights[y] = (tp_u32)round(
+        heights[y] = (tp_u32)floor(
             (tp_f64)remaining_height * fig->height_fractions[y]
         );
-        used_height += heights[y];
 
         if (heights[y] < fixed_heights[y]) {
             return _TP_FALSE;
         }
-    }
-
-    // Ensure we do not go over height (insurance for float imprecision)
-    while (used_height > remaining_height) {
-        tp_u32 row = 0;
-
-        while (row < fig->subplot_rows && heights[row] == fixed_heights[row]) {
-            row++;
-        }
-
-        if (row >= fig->subplot_cols) {
-            return _TP_FALSE;
-        }
-
-        heights[row]--;
-        used_height--;
     }
 
     memset(layout, 0, sizeof(_tp_fig_layout));
@@ -1192,7 +1302,7 @@ tp_b32 _tp_layout_axes(
         tp_u32 cur_y = fig->margin;
 
         for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
-            tp_u32 idx = col + row * fig->subplot_rows;
+            tp_u32 idx = col + row * fig->subplot_cols;
 
             layout->drawable[idx] = (_tp_rect_u32){
                 .x = cur_x + draw_area.x,
@@ -1217,128 +1327,6 @@ tp_b32 _tp_layout_axes(
     }
 
     return _TP_TRUE;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// 
-// Unicode Processing
-// 
-////////////////////////////////////////////////////////////////////////////////
-
-
-static const tp_u8 _tp_utf8_lengths[] = {
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0
-};
-
-// Returns the number of unicode codepoints in the utf8 string
-// Will parse so long as the utf8 stream is valid
-tp_u32 _tp_utf8_cp_length(tp_string8 str) {
-    tp_u32 count = 0;
-    tp_u32 cur_len = 1;
-
-    // `cur_len` of 0 means an invalid utf8 stream, so just parse until then
-    for (tp_u64 i = 0; i < str.size && cur_len != 0; count++, i += cur_len) {
-        cur_len = _tp_utf8_lengths[str.str[i] >> 3];
-    }
-
-    return count;
-}
-
-// Will write up to `cap` codepoints to the utf32 stream in `out`
-// Stops writing if it encounters an invalid portion of the utf8 stream
-//
-// Returns the number of codepoints written
-tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
-    static const tp_u8 first_byte_masks[] = {
-        0, 0x7f, 0x1f, 0x0f, 0x07
-    };
-    static const tp_u8 final_shifts[] = {
-        0, 18, 12, 6, 0
-    };
-
-    tp_u32 out_pos = 0;
-    tp_u32 cur_len = 0;
-
-    for (
-        tp_u64 i = 0;
-        i < str.size && out_pos < cap; 
-        out_pos++, i += cur_len
-    ) {
-        tp_u8 first_byte = str.str[i];
-        cur_len = _tp_utf8_lengths[first_byte >> 3];
-
-        if (cur_len == 0 || i + cur_len > str.size) { break; }
-
-        tp_u32 codepoint = (tp_u32)(first_byte & first_byte_masks[cur_len]);
-        codepoint <<= 18;
-
-        switch (cur_len) {
-            case 4: codepoint |= ((tp_u32)str.str[i+3] & 0x3f);
-            // fallthrough
-            case 3: codepoint |= (((tp_u32)str.str[i+2] & 0x3f) << 6);
-            // fallthrough
-            case 2: codepoint |= (((tp_u32)str.str[i+1] & 0x3f) << 12);
-            default: break;
-        }
-
-        codepoint >>= final_shifts[cur_len];
-        out[out_pos] = codepoint;
-    }
-
-    return out_pos;
-}
-
-// Returns the size in bytes it would take to encode the utf32 stream as a 
-// utf8 stream
-//
-// This function assumes that the input is a valid utf32 stream, which should 
-// be fine because we only call this internally
-tp_u64 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
-    tp_u64 size = 0;
-
-    for (tp_u32 i = 0; i < len; i++) {
-        size += 1 +
-            (str[i] >= 0x80) +
-            (str[i] >= 0x800) +
-            (str[i] >= 0x10000);
-    }
-
-    return size;
-}
-
-// Encodes a single unicode codepoint to a utf8 stream
-//
-// This function assumes that the input is a valid utf32 stream, which should 
-// be fine because we only call this internally
-tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
-    tp_u32 size = 0;
-
-    if (codepoint <= 0x7f) {
-        out[0] = (tp_u8)(codepoint & 0xff);
-
-        size = 1;
-    } else if (codepoint <= 0x7ff) {
-        out[0] = (tp_u8)(0xc0 | (codepoint >> 6));
-        out[1] = (tp_u8)(0x80 | (codepoint & 0x3f));
-
-        size = 2;
-    } else if (codepoint <= 0xffff) {
-        out[0] = (tp_u8)(0xe0 | (codepoint >> 12));
-        out[1] = (tp_u8)(0x80 | ((codepoint >> 6) & 0x3f));
-        out[2] = (tp_u8)(0x80 | (codepoint & 0x3f));
-
-        size = 3;
-    } else if (codepoint <= 0x10fff) {
-        out[0] = (tp_u8)(0xf0 | (codepoint >> 18));
-        out[1] = (tp_u8)(0x80 | ((codepoint >> 12) & 0x3f));
-        out[2] = (tp_u8)(0x80 | ((codepoint >> 6) & 0x3f));
-        out[3] = (tp_u8)(0x80 | (codepoint & 0x3f));
-
-        size = 4;
-    }
-
-    return size;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1597,6 +1585,30 @@ void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
+_tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
+    _tp_dim_u32 fig_size = { fig->char_width, fig->char_height };
+    _tp_dim_u32 term_size = _tp_get_termsize();
+
+    if (fig_size.width == 0 && fig_size.height == 0) {
+        fig_size = term_size;
+    }
+
+    fig_size.width = (tp_u32)_TP_MAX(
+        0, (tp_i32)fig_size.width + fig->width_offset
+    );
+
+    fig_size.height = (tp_u32)_TP_MAX(
+        0, (tp_i32)fig_size.height + fig->height_offset
+    );
+
+    if (clamp_to_term) {
+        fig_size.width = _TP_MIN(fig_size.width, term_size.width);
+        fig_size.height = _TP_MIN(fig_size.height, term_size.height);
+    }
+
+    return fig_size;
+}
+
 void _tp_draw_axes(
     tp_figure* fig,
     _tp_axes* axes, _tp_draw_target* dt, 
@@ -1610,7 +1622,7 @@ void _tp_draw_axes(
 
     static const tp_u32 x_bars[_TP_RASTER_COUNT] = {
         [TP_RASTER_BRAILLE] = U'━',
-        [TP_RASTER_ASCII] = '|',
+        [TP_RASTER_ASCII] = '-',
     };
     
     static const tp_u32 y_bars[_TP_RASTER_COUNT] = {
@@ -1664,10 +1676,24 @@ void _tp_draw_axes(
 
 void _tp_draw_figure(
     tp_figure* fig, _tp_draw_target* dt,
-    _tp_fig_layout* layout, _tp_draw_context* context,
+    const _tp_fig_layout* layout, const _tp_draw_context* context,
     _tp_rect_u32 area
 ) {
-    // TODO: render figure title
+    // Drawing title
+    {
+        tp_u32 title_width = _tp_str8_width(fig->title);
+        tp_u32 fig_mid = area.w / 2;
+
+        tp_u32 draw_offset = title_width / 2 > fig_mid ?
+            0 : fig_mid - title_width / 2;
+        title_width = _TP_MIN(title_width, area.w - draw_offset);
+
+        tp_u32* out_codes = dt->codepoints + (
+            (area.x + draw_offset) + (area.y) * dt->width
+        );
+
+        _tp_utf32_from_utf8(fig->title, out_codes, title_width);
+    }
 
     for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
         for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
@@ -1690,11 +1716,7 @@ tp_string8 tp_render_utf8(
 
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
 
-    _tp_dim_u32 fig_size = { fig->char_width, fig->char_height };
-    if (fig_size.width == 0 && fig_size.height == 0) {
-        fig_size = _tp_get_termsize();
-    }
-
+    _tp_dim_u32 fig_size = _tp_size_figure(fig, _TP_FALSE);
     _tp_rect_u32 draw_area = {
         .w = fig_size.width,
         .h = fig_size.height,
@@ -1722,19 +1744,17 @@ tp_string8 tp_render_utf8(
         out.str = allocator->alloc_fn(rendered_size, allocator->user_data);
     }
 
-    if (out.str == NULL) {
-        goto end;
+    if (out.str != NULL) {
+        out.size = rendered_size;
+
+        _tp_draw_target_encode(
+            &draw_target, newline_style,
+            !fig->monochrome, out.str
+        );
     }
 
-    out.size = rendered_size;
-
-    _tp_draw_target_encode(
-        &draw_target, newline_style,
-        !fig->monochrome, out.str
-    );
-
-end:
     _tp_arena_temp_end(temp_arena);
+
     return out;
 }
 

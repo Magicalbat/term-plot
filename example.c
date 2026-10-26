@@ -15,22 +15,18 @@ typedef double f64;
 
 int main(void) {
     tp_figure* fig = tp_begin(&(tp_figure_desc){
-        .subplot_rows = 2,
+        .subplot_rows = 1,
         .subplot_cols = 2,
 
-        .char_width = 120,
-        .char_height = 35,
+        .title = TP_STR8("Example Figure"),
 
-        .override_padding = true,
-        .custom_padding = 2,
-
-        .width_ratios = { 1, 2 }
+        .char_height_offset = -1,
     });
 
     tp_string8 rendered = tp_render_utf8(fig, TP_NEWLINE_LF, NULL);
 
     tp_enable_utf8_output();
-    printf("%.*s\n", (int)rendered.size, rendered.str);
+    printf("%.*s", (int)rendered.size, rendered.str);
     
     tp_end(fig);
 
