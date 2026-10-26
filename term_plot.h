@@ -1581,6 +1581,75 @@ void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
+// Braille drawing functions
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+void _tp_braille_draw_begin(
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_rgb8 bg_col
+) {
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+
+            dt->codepoints[index] = 0x2800;
+            // TODO: more advanced plot coloring
+            dt->fg_cols[index] = (tp_rgb8){ 255, 255, 255 };
+            dt->bg_cols[index] = bg_col;
+        }
+    }
+}
+
+void _tp_braille_draw_point(
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_f64 dot_x, tp_f64 dot_y
+) {
+    if (
+        dot_x < 0.0 || dot_x >= graphable.w * 2 ||
+        dot_y < 0.0 || dot_y >= graphable.h * 4
+    ) {
+        return;
+    }
+
+    static const tp_u8 braille_pattern[] = {
+        0x1, 0x8,
+        0x2, 0x10,
+        0x4, 0x20,
+        0x40, 0x80,
+    };
+
+    tp_u32 char_x = (tp_u32)dot_x / 2;
+    tp_u32 char_y = (tp_u32)dot_y / 4;
+
+    tp_u32 lx = (tp_u32)dot_x % 2;
+    tp_u32 ly = (tp_u32)dot_y % 4;
+
+    tp_u32 index = (graphable.x + char_x) + (graphable.y + char_y) * dt->width;
+    dt->codepoints[index] |= braille_pattern[lx + ly * 2];
+}
+
+void _tp_braille_draw_scatter(
+    const _tp_draw_pointslike* pointslike,
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    _tp_axes_bounds bounds
+) {
+    tp_u32 dot_w = graphable.w * 2;
+    tp_u32 dot_h = graphable.h * 4;
+
+    tp_f64 xscale = (tp_f64)dot_w / (bounds.xmax - bounds.xmin);
+    tp_f64 yscale = -((tp_f64)dot_h / (bounds.ymax - bounds.ymin));
+
+    for (tp_u32 i = 0; i < pointslike->num_points; i++) {
+        tp_f64 dot_x = (pointslike->xs[i] - bounds.xmin) * xscale;
+        tp_f64 dot_y = (pointslike->ys[i] + bounds.ymin) * yscale;
+
+        _tp_braille_draw_point( dt, graphable, dot_x, dot_y);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
 // Primary rendering functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1664,13 +1733,23 @@ void _tp_draw_axes(
 
     dt->codepoints[o_index] = origin;
 
-    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
-        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
-            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+    if (fig->raster_type == TP_RASTER_BRAILLE) {
+        _tp_braille_draw_begin(dt, graphable, (tp_rgb8){ 0 });
 
-            dt->codepoints[index] = U' ';
-            dt->fg_cols[index] = (tp_rgb8){ 150, 150, 150 };
+        for (
+            _tp_draw_cmd* cmd = axes->first_draw;
+            cmd != NULL; cmd = cmd->next
+        ) {
+            switch (cmd->kind) {
+                case _TP_DRAW_SCATTER: {
+                    _tp_braille_draw_scatter(
+                        &cmd->info.scatter, dt,
+                        graphable, bounds
+                    );
+                } break;
+            }
         }
+    } else if (fig->raster_type == TP_RASTER_ASCII) {
     }
 }
 
