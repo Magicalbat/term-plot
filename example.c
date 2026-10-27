@@ -17,7 +17,7 @@ typedef double f64;
 
 int main(void) {
     tp_figure* fig = tp_begin(&(tp_figure_desc){
-        .subplot_rows = 1,
+        .subplot_rows = 2,
         .subplot_cols = 1,
 
         .title = TP_STR8("Example Figure"),
@@ -25,7 +25,7 @@ int main(void) {
         .char_height_offset = -1,
     });
 
-    u32 N = 64;
+    u32 N = 32;
 
     {
         f64* x0s = malloc(sizeof(f64) * N);
@@ -48,7 +48,7 @@ int main(void) {
         });
 
         tp_plot_scatter(fig, &(tp_points_desc){
-            .axes_row = 0,
+            .axes_row = 1,
             .axes_col = 0,
 
             .num_points = N,
@@ -60,6 +60,14 @@ int main(void) {
         free(y0s);
         free(y1s);
     }
+
+    tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
+        .title = TP_STR8("Here is a subplot")
+    });
+
+    tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
+        .title = TP_STR8("Another one")
+    });
 
     tp_string8 rendered = tp_render_utf8(fig, TP_NEWLINE_LF, NULL);
 

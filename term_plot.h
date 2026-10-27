@@ -1299,7 +1299,7 @@ tp_b32 _tp_layout_axes(
 
     tp_u32 cur_x = fig->margin;
     for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
-        tp_u32 cur_y = fig->margin;
+        tp_u32 cur_y = _TP_TITLE_ROWS + fig->margin;
 
         for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
             tp_u32 idx = col + row * fig->subplot_cols;
@@ -1654,6 +1654,33 @@ void _tp_braille_draw_scatter(
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Draws the given text horizontally centered within the draw area at
+// the given y offset
+//
+// If there is not enough space to fit the text, it will be clipped and show 
+// the first `area.w` codepoints
+void _tp_draw_hcenter_text(
+    _tp_draw_target* dt, _tp_rect_u32 area,
+    tp_string8 text, tp_u32 y_off
+) {
+    if (text.size == 0) { return; }
+
+    y_off = _TP_MIN(y_off, area.h - 1);
+
+    tp_u32 text_width = _tp_str8_width(text);
+    tp_u32 fig_mid = area.w / 2;
+
+    tp_u32 draw_offset = text_width / 2 > fig_mid ?
+        0 : fig_mid - text_width / 2;
+    text_width = _TP_MIN(text_width, area.w - draw_offset);
+
+    tp_u32* out_codes = dt->codepoints + (
+        (area.x + draw_offset) + (area.y + y_off) * dt->width
+    );
+
+    _tp_utf32_from_utf8(text, out_codes, text_width);
+}
+
 _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
     _tp_dim_u32 fig_size = { fig->char_width, fig->char_height };
     _tp_dim_u32 term_size = _tp_get_termsize();
@@ -1684,38 +1711,21 @@ void _tp_draw_axes(
     _tp_rect_u32 drawable, _tp_rect_u32 graphable,
     _tp_axes_bounds bounds
 ) {
-    static const tp_u32 origins[_TP_RASTER_COUNT] = {
-        [TP_RASTER_BRAILLE] = U'┗',
-        [TP_RASTER_ASCII] = 'o',
-    };
-
-    static const tp_u32 x_bars[_TP_RASTER_COUNT] = {
-        [TP_RASTER_BRAILLE] = U'━',
-        [TP_RASTER_ASCII] = '-',
-    };
+    _tp_draw_hcenter_text(dt, drawable, axes->title, 0);
     
-    static const tp_u32 y_bars[_TP_RASTER_COUNT] = {
-        [TP_RASTER_BRAILLE] = U'┃',
-        [TP_RASTER_ASCII] = '|',
-    };
+    tp_u32 origin = U'┗';
+    tp_u32 x_bar = U'━';
+    tp_u32 y_bar = U'┃';
+    tp_u32 x_tick = U'┯';
+    tp_u32 y_tick = U'┨';
 
-    static const tp_u32 y_ticks[_TP_RASTER_COUNT] = {
-        [TP_RASTER_BRAILLE] = U'┨',
-        [TP_RASTER_ASCII] = '+',
-    };
-
-    static const tp_u32 x_ticks[_TP_RASTER_COUNT] = {
-        [TP_RASTER_BRAILLE] = U'┯',
-        [TP_RASTER_ASCII] = '+',
-    };
-
-    tp_raster_type rt = fig->raster_type;
-
-    tp_u32 origin = origins[rt];
-    tp_u32 x_bar = x_bars[rt];
-    tp_u32 y_bar = y_bars[rt];
-    tp_u32 x_tick = x_ticks[rt];
-    tp_u32 y_tick = y_ticks[rt];
+    if (fig->raster_type == TP_RASTER_ASCII) {
+        origin = U'o';
+        x_bar = U'-';
+        y_bar = U'|';
+        x_tick = U'+';
+        y_tick = U'+';
+    }
 
     for (tp_u32 ly = 0; ly < graphable.h; ly++) {
         tp_u32 index = (graphable.x - 1) + (graphable.y + ly) * dt->width;
@@ -1758,21 +1768,7 @@ void _tp_draw_figure(
     const _tp_fig_layout* layout, const _tp_draw_context* context,
     _tp_rect_u32 area
 ) {
-    // Drawing title
-    {
-        tp_u32 title_width = _tp_str8_width(fig->title);
-        tp_u32 fig_mid = area.w / 2;
-
-        tp_u32 draw_offset = title_width / 2 > fig_mid ?
-            0 : fig_mid - title_width / 2;
-        title_width = _TP_MIN(title_width, area.w - draw_offset);
-
-        tp_u32* out_codes = dt->codepoints + (
-            (area.x + draw_offset) + (area.y) * dt->width
-        );
-
-        _tp_utf32_from_utf8(fig->title, out_codes, title_width);
-    }
+    _tp_draw_hcenter_text(dt, area, fig->title, fig->margin);
 
     for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
         for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
