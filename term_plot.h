@@ -264,6 +264,7 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 #   define TP_WARN(msg) fprintf(stderr, (msg))
 #endif
 
+#define _TP_ABS(x) ((x) < 0 ? -(x) : (x))
 #define _TP_MIN(a, b) ((a) < (b) ? (a) : (b))
 #define _TP_MAX(a, b) ((a) > (b) ? (a) : (b))
 #define _TP_CLAMP(x, a, b) (_TP_MIN((b), _TP_MAX((x), (a))))
@@ -1560,23 +1561,65 @@ void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
     for (tp_u32 i = 0; i < fig->subplot_rows * fig->subplot_cols; i++) {
         _tp_axes* axes = fig->axes + i;
 
-        if (axes->first_draw == NULL) {
-            draw_context->bounds[i] = (_tp_axes_bounds){
-                .xmin = 0.0, .xmax = 1.0,
-                .ymin = 0.0, .ymax = 1.0,
-            };
+        tp_b8 override_x = axes->xmin == 0.0 && axes->xmax == 0.0;
+        tp_b8 override_y = axes->ymin == 0.0 && axes->ymax == 0.0;
 
-            continue;
-        }
+        draw_context->bounds[i] = (_tp_axes_bounds){
+            .xmin = axes->xmin, .xmax = axes->xmax,
+            .ymin = axes->ymin, .ymax = axes->ymax,
+        };
 
-        draw_context->bounds[i] = _tp_def_axes_bounds;
-        for (
-            _tp_draw_cmd* cmd = axes->first_draw;
-            cmd != NULL; cmd = cmd->next
-        ) {
-            _tp_expand_bounds(&draw_context->bounds[i], cmd);
+        if (override_x || override_y) {
+            _tp_axes_bounds computed = _tp_def_axes_bounds;
+
+            if (axes->first_draw == NULL) {
+                computed = (_tp_axes_bounds){
+                    .xmin = 0.0, .xmax = 1.0,
+                    .ymin = 0.0, .ymax = 1.0,
+                };
+            } else {
+                for (
+                    _tp_draw_cmd* cmd = axes->first_draw;
+                    cmd != NULL; cmd = cmd->next
+                ) {
+                    _tp_expand_bounds(&computed, cmd);
+                }
+            }
+
+            if (override_x) {
+                draw_context->bounds[i].xmin = computed.xmin;
+                draw_context->bounds[i].xmax = computed.xmax;
+            }
+
+            if (override_y) {
+                draw_context->bounds[i].ymin = computed.ymin;
+                draw_context->bounds[i].ymax = computed.ymax;
+            }
         }
     }
+}
+
+// Computes transform parameters such that 
+//
+// x * xscale + xoff
+// y * yscale + yoff
+//
+// transform a given (x, y) from graph space to dot space, where dot space is
+// +y down and generally a direct factor of the character dimensions of the 
+// draw area
+//
+// For example, with braille, (xdots, ydots) = (2 * char_width, 4 * char_height)
+void _tp_get_bound_transforms(
+    const _tp_axes_bounds* bounds,
+    tp_f64 xdots, tp_f64 ydots,
+    tp_f64* xscale, tp_f64* yscale,
+    tp_f64* xoff, tp_f64* yoff
+) {
+    *xscale = xdots / (bounds->xmax - bounds->xmin);
+    *yscale = -(ydots / (bounds->ymax - bounds->ymin));
+
+    *xoff = -bounds->xmin * (*xscale);
+    *yoff = -bounds->ymax * (*yscale);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1603,11 +1646,11 @@ void _tp_braille_draw_begin(
 
 void _tp_braille_draw_point(
     _tp_draw_target* dt, _tp_rect_u32 graphable,
-    tp_f64 dot_x, tp_f64 dot_y
+    tp_i32 dot_x, tp_i32 dot_y
 ) {
     if (
-        dot_x < 0.0 || dot_x >= graphable.w * 2 ||
-        dot_y < 0.0 || dot_y >= graphable.h * 4
+        dot_x < 0.0 || dot_x >= (tp_i32)graphable.w * 2 ||
+        dot_y < 0.0 || dot_y >= (tp_i32)graphable.h * 4
     ) {
         return;
     }
@@ -1634,17 +1677,66 @@ void _tp_braille_draw_scatter(
     _tp_draw_target* dt, _tp_rect_u32 graphable,
     _tp_axes_bounds bounds
 ) {
-    tp_u32 dot_w = graphable.w * 2;
-    tp_u32 dot_h = graphable.h * 4;
+    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
 
-    tp_f64 xscale = (tp_f64)dot_w / (bounds.xmax - bounds.xmin);
-    tp_f64 yscale = -((tp_f64)dot_h / (bounds.ymax - bounds.ymin));
+    _tp_get_bound_transforms(
+        &bounds, graphable.w * 2, graphable.h * 4,
+        &xscale, &yscale, &xoff, &yoff
+    );
 
     for (tp_u32 i = 0; i < pointslike->num_points; i++) {
-        tp_f64 dot_x = (pointslike->xs[i] - bounds.xmin) * xscale;
-        tp_f64 dot_y = (pointslike->ys[i] + bounds.ymin) * yscale;
+        tp_i32 dot_x = (tp_i32)(pointslike->xs[i] * xscale + xoff);
+        tp_i32 dot_y = (tp_i32)(pointslike->ys[i] * yscale + yoff);
 
         _tp_braille_draw_point( dt, graphable, dot_x, dot_y);
+    }
+}
+
+void _tp_braille_draw_lines(
+    const _tp_draw_pointslike* pointslike,
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    _tp_axes_bounds bounds
+) {
+    if (pointslike->num_points <= 1) { return; }
+
+    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
+
+    _tp_get_bound_transforms(
+        &bounds, graphable.w * 2, graphable.h * 4,
+        &xscale, &yscale, &xoff, &yoff
+    );
+
+    tp_i32 x0 = (tp_i32)(pointslike->xs[0] * xscale + xoff);
+    tp_i32 y0 = (tp_i32)(pointslike->ys[0] * yscale + yoff);
+
+    for (tp_u32 i = 1; i < pointslike->num_points; i++) {
+        tp_i32 x1 = (tp_i32)(pointslike->xs[i] * xscale + xoff);
+        tp_i32 y1 = (tp_i32)(pointslike->ys[i] * yscale + yoff);
+
+        tp_i32 dx = _TP_ABS(x1 - x0);
+        tp_i32 dy = _TP_ABS(y1 - y0);
+        tp_i32 sx = x0 < x1 ? 1 : -1;
+        tp_i32 sy = y0 < y1 ? 1 : -1;
+
+        tp_i32 err = (dx > dy ? dx : -dy) / 2;
+        while (1) {
+            _tp_braille_draw_point(dt, graphable, x0, y0);
+
+            if (x0 >= x1 && y0 >= y1) { break; }
+
+            tp_i32 new_err = err;
+            if (err > -dx) { 
+                new_err -= dy;
+                x0 += sx;
+            }
+
+            if (err < dy) {
+                new_err += dx;
+                y0 += sy;
+            }
+
+            err = new_err;
+        }
     }
 }
 
@@ -1751,9 +1843,18 @@ void _tp_draw_axes(
             cmd != NULL; cmd = cmd->next
         ) {
             switch (cmd->kind) {
+                case _TP_DRAW_NONE: break;
+
                 case _TP_DRAW_SCATTER: {
                     _tp_braille_draw_scatter(
                         &cmd->info.scatter, dt,
+                        graphable, bounds
+                    );
+                } break;
+
+                case _TP_DRAW_LINES: {
+                    _tp_braille_draw_lines(
+                        &cmd->info.lines, dt,
                         graphable, bounds
                     );
                 } break;
