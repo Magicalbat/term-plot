@@ -50,13 +50,11 @@ typedef enum {
 } tp_raster_type;
 
 typedef enum {
-    TP_AXES_LEGEND     = 0b00000001,
-    TP_AXES_NO_XAXIS   = 0b00000010,
-    TP_AXES_NO_YAXIS   = 0b00000100,
-    TP_AXES_NO_XTICKS  = 0b00001000,
-    TP_AXES_NO_YTICKS  = 0b00010000,
-    TP_AXES_NO_XNUMS   = 0b00100000,
-    TP_AXES_NO_YNUMS   = 0b01000000,
+    TP_AXES_LEGEND    = 0b000001,
+    TP_AXES_NO_XTICKS = 0b000010,
+    TP_AXES_NO_YTICKS = 0b000100,
+    TP_AXES_NO_XNUMS  = 0b001000,
+    TP_AXES_NO_YNUMS  = 0b010000,
 } tp_axes_flags;
 
 #ifndef TP_MAX_SUBPLOT_ROWS 
@@ -68,6 +66,11 @@ typedef enum {
 #endif
 
 #define TP_MAX_SUBPLOTS (TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS)
+
+// Number of characters to display for the axis numbers
+#ifndef TP_AXIS_NUM_CHARS
+#   define TP_AXIS_NUM_CHARS 6
+#endif
 
 typedef struct {
     // Number of rows of subplots
@@ -250,8 +253,11 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 #include <string.h> // memset, memcpy
 #include <math.h>
 
-#ifndef TP_FATAL_ERROR
+#if !defined(TP_FATAL_ERROR) || !defined(TP_WARN)
 #   include <stdio.h>
+#endif
+
+#ifndef TP_FATAL_ERROR
 #   include <stdlib.h>
 #   define TP_FATAL_ERROR(msg) do { \
         fprintf(stderr, (msg)); \
@@ -260,7 +266,6 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 #endif
 
 #ifndef TP_WARN
-#   include <stdio.h>
 #   define TP_WARN(msg) fprintf(stderr, (msg))
 #endif
 
@@ -354,7 +359,7 @@ _tp_dim_u32 _tp_get_termsize(void) {
     )) {
         TP_WARN(
             "[term-plot Warning] "
-            "Failed to get terminal size, returning default"
+            "Failed to get terminal size, returning default\n"
         );
 
         return _tp_def_termsize;
@@ -436,7 +441,7 @@ _tp_dim_u32 _tp_get_termsize(void) {
 
     TP_WARN(
         "[term-plot Warning] "
-        "Failed to get terminal size, returning default"
+        "Failed to get terminal size, returning default\n"
     );
 
     return _tp_def_termsize;
@@ -522,7 +527,7 @@ _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
     }
 
     if (arena == NULL) {
-        TP_FATAL_ERROR("[term-plot Error] Failed to commit memory for arena");
+        TP_FATAL_ERROR("[term-plot Error] Failed to commit memory for arena\n");
         return NULL;
     }
 
@@ -606,7 +611,7 @@ void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
     }
 
     if (out == NULL) {
-        TP_FATAL_ERROR("[term-plot Error] Failed to allocate memory for arena");
+        TP_FATAL_ERROR("[term-plot Error] Failed to allocate memory for arena\n");
         return NULL;
     }
 
@@ -955,7 +960,7 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
             "[term-plot Warning] "
             "Clamping figure subplot rows and columns to maximum. "
             "If this is an issue, consider defining `TP_MAX_SUBPLOT_ROWS` "
-            "and/or `TP_MAX_SUBPLOT_COLS` to a higher number."
+            "and/or `TP_MAX_SUBPLOT_COLS` to a higher number.\n"
         );
     }
 
@@ -1043,7 +1048,7 @@ void tp_setup_axes(
     if (arow >= fig->subplot_rows || acol >= fig->subplot_cols) {
         TP_WARN(
             "[term-plot Warning] "
-            "Ignoring out of bounds call to `tp_setup_axes`."
+            "Ignoring out of bounds call to `tp_setup_axes`.\n"
         );
 
         return;
@@ -1078,7 +1083,7 @@ void _tp_plot_pointslike(
         TP_WARN(
             "[term-plot Warning] "
             "Ignoring invalid plotting command. Check for out of bounds axes "
-            "and/or invalid data pointers"
+            "and/or invalid data pointers\n"
         );
 
         return;
@@ -1141,11 +1146,6 @@ void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
-// Number of characters to display for the y axis numbers
-#ifndef TP_YNUM_CHARS
-#   define TP_YNUM_CHARS 6
-#endif
-
 // One for the text, one for padding
 // Used for figure and axes titles
 #define _TP_TITLE_ROWS 2
@@ -1185,7 +1185,7 @@ _tp_fixed_size _tp_axes_fixed_size(
 
     _tp_fixed_size size = {
         // (y label & pad) + y nums + y axis
-        .left = 2 + TP_YNUM_CHARS + 1,
+        .left = 2 + TP_AXIS_NUM_CHARS + 1,
 
         // (title & y scale & pad)
         .top = _TP_TITLE_ROWS,
@@ -1195,11 +1195,9 @@ _tp_fixed_size _tp_axes_fixed_size(
     };
 
     if (axes->ylabel.size == 0) { size.left--; }
-    if (axes->flags & TP_AXES_NO_YNUMS) { size.left -= TP_YNUM_CHARS; }
-    if (axes->flags & TP_AXES_NO_YAXIS) { size.left--; }
+    if (axes->flags & TP_AXES_NO_YNUMS) { size.left -= TP_AXIS_NUM_CHARS; }
 
     if (axes->flags & TP_AXES_NO_XNUMS) { size.bottom--; }
-    if (axes->flags & TP_AXES_NO_XAXIS) { size.bottom--; }
 
     return size;
 }
@@ -1624,22 +1622,59 @@ void _tp_get_bound_transforms(
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
+// Common drawing stuff
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+// Its definitely a little dumb doing this with a macro, but line drawing for a 
+// pointslike is something that I would have had to repeat enough times that I
+// felt this necessary.
+//
+// This macro is meant to go in a function that has variables `xscale`, `xoff`,
+// `yscale`, `yoff`, and `pointslike`. You must give a line to execute for each
+// point, where the point is at `x0`, `y0`.
+// 
+// See `_tp_braille_draw_lines` for an example
+#define _TP_DRAW_LINES(point_draw) do { \
+        tp_i32 x0 = (tp_i32)(pointslike->xs[0] * xscale + xoff); \
+        tp_i32 y0 = (tp_i32)(pointslike->ys[0] * yscale + yoff); \
+        for (tp_u32 i = 1; i < pointslike->num_points; i++) { \
+            tp_i32 x1 = (tp_i32)(pointslike->xs[i] * xscale + xoff); \
+            tp_i32 y1 = (tp_i32)(pointslike->ys[i] * yscale + yoff); \
+            tp_i32 dx = _TP_ABS(x1 - x0); \
+            tp_i32 dy = _TP_ABS(y1 - y0); \
+            tp_i32 sx = x0 < x1 ? 1 : -1; \
+            tp_i32 sy = y0 < y1 ? 1 : -1; \
+            tp_i32 err = (dx > dy ? dx : -dy) / 2; \
+            while (1) { \
+                point_draw; \
+                if (x0 >= x1 && y0 >= y1) { break; } \
+                tp_i32 new_err = err; \
+                if (err > -dx) {  \
+                    new_err -= dy; \
+                    x0 += sx; \
+                } \
+                if (err < dy) { \
+                    new_err += dx; \
+                    y0 += sy; \
+                } \
+                err = new_err; \
+            } \
+        } \
+    } while(0)
+
+////////////////////////////////////////////////////////////////////////////////
+// 
 // Braille drawing functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
-void _tp_braille_draw_begin(
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    tp_rgb8 bg_col
-) {
+void _tp_braille_draw_begin(_tp_draw_target* dt, _tp_rect_u32 graphable) {
     for (tp_u32 ly = 0; ly < graphable.h; ly++) {
         for (tp_u32 lx = 0; lx < graphable.w; lx++) {
             tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
 
             dt->codepoints[index] = 0x2800;
-            // TODO: more advanced plot coloring
-            dt->fg_cols[index] = (tp_rgb8){ 255, 255, 255 };
-            dt->bg_cols[index] = bg_col;
         }
     }
 }
@@ -1649,8 +1684,8 @@ void _tp_braille_draw_point(
     tp_i32 dot_x, tp_i32 dot_y
 ) {
     if (
-        dot_x < 0.0 || dot_x >= (tp_i32)graphable.w * 2 ||
-        dot_y < 0.0 || dot_y >= (tp_i32)graphable.h * 4
+        dot_x < 0 || dot_x >= (tp_i32)graphable.w * 2 ||
+        dot_y < 0 || dot_y >= (tp_i32)graphable.h * 4
     ) {
         return;
     }
@@ -1706,38 +1741,77 @@ void _tp_braille_draw_lines(
         &xscale, &yscale, &xoff, &yoff
     );
 
-    tp_i32 x0 = (tp_i32)(pointslike->xs[0] * xscale + xoff);
-    tp_i32 y0 = (tp_i32)(pointslike->ys[0] * yscale + yoff);
+    _TP_DRAW_LINES(_tp_braille_draw_point(dt, graphable, x0, y0));
+}
 
-    for (tp_u32 i = 1; i < pointslike->num_points; i++) {
-        tp_i32 x1 = (tp_i32)(pointslike->xs[i] * xscale + xoff);
-        tp_i32 y1 = (tp_i32)(pointslike->ys[i] * yscale + yoff);
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Ascii drawing functions
+// 
+////////////////////////////////////////////////////////////////////////////////
 
-        tp_i32 dx = _TP_ABS(x1 - x0);
-        tp_i32 dy = _TP_ABS(y1 - y0);
-        tp_i32 sx = x0 < x1 ? 1 : -1;
-        tp_i32 sy = y0 < y1 ? 1 : -1;
+void _tp_ascii_draw_begin(_tp_draw_target* dt, _tp_rect_u32 graphable) {
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
 
-        tp_i32 err = (dx > dy ? dx : -dy) / 2;
-        while (1) {
-            _tp_braille_draw_point(dt, graphable, x0, y0);
-
-            if (x0 >= x1 && y0 >= y1) { break; }
-
-            tp_i32 new_err = err;
-            if (err > -dx) { 
-                new_err -= dy;
-                x0 += sx;
-            }
-
-            if (err < dy) {
-                new_err += dx;
-                y0 += sy;
-            }
-
-            err = new_err;
+            dt->codepoints[index] = ' ';
         }
     }
+}
+
+void _tp_ascii_draw_point(
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_i32 x, tp_i32 y
+) {
+    if (
+        x < 0 || x >= (tp_i32)graphable.w ||
+        y < 0 || y >= (tp_i32)graphable.h
+    ) {
+        return;
+    }
+
+    tp_u32 index = (graphable.x + (tp_u32)x) +
+        (graphable.y + (tp_u32)y) * dt->width;
+
+    dt->codepoints[index] = U'#';
+}
+
+void _tp_ascii_draw_scatter(
+    const _tp_draw_pointslike* pointslike,
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    _tp_axes_bounds bounds
+) {
+    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
+
+    _tp_get_bound_transforms(
+        &bounds, graphable.w, graphable.h,
+        &xscale, &yscale, &xoff, &yoff
+    );
+
+    for (tp_u32 i = 0; i < pointslike->num_points; i++) {
+        tp_i32 dot_x = (tp_i32)(pointslike->xs[i] * xscale + xoff);
+        tp_i32 dot_y = (tp_i32)(pointslike->ys[i] * yscale + yoff);
+
+        _tp_ascii_draw_point( dt, graphable, dot_x, dot_y);
+    }
+}
+
+void _tp_ascii_draw_lines(
+    const _tp_draw_pointslike* pointslike,
+    _tp_draw_target* dt, _tp_rect_u32 graphable,
+    _tp_axes_bounds bounds
+) {
+    if (pointslike->num_points <= 1) { return; }
+
+    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
+
+    _tp_get_bound_transforms(
+        &bounds, graphable.w, graphable.h,
+        &xscale, &yscale, &xoff, &yoff
+    );
+
+    _TP_DRAW_LINES(_tp_ascii_draw_point(dt, graphable, x0, y0));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1836,7 +1910,7 @@ void _tp_draw_axes(
     dt->codepoints[o_index] = origin;
 
     if (fig->raster_type == TP_RASTER_BRAILLE) {
-        _tp_braille_draw_begin(dt, graphable, (tp_rgb8){ 0 });
+        _tp_braille_draw_begin(dt, graphable);
 
         for (
             _tp_draw_cmd* cmd = axes->first_draw;
@@ -1861,6 +1935,34 @@ void _tp_draw_axes(
             }
         }
     } else if (fig->raster_type == TP_RASTER_ASCII) {
+        _tp_ascii_draw_begin(dt, graphable);
+
+        for (
+            _tp_draw_cmd* cmd = axes->first_draw;
+            cmd != NULL; cmd = cmd->next
+        ) {
+            switch (cmd->kind) {
+                case _TP_DRAW_NONE: break;
+
+                case _TP_DRAW_SCATTER: {
+                    _tp_ascii_draw_scatter(
+                        &cmd->info.scatter, dt,
+                        graphable, bounds
+                    );
+                } break;
+
+                case _TP_DRAW_LINES: {
+                    _tp_ascii_draw_lines(
+                        &cmd->info.lines, dt,
+                        graphable, bounds
+                    );
+                } break;
+            }
+        }
+    }
+
+    if (!fig->monochrome) {
+        // TODO: color pass
     }
 }
 

@@ -62,9 +62,6 @@ int main(void) {
 
     tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
         .title = TP_STR8("Another one"),
-
-        .ymin = 0.0,
-        .ymax = 1.0,
     });
 
     tp_string8 rendered = tp_render_utf8(fig, TP_NEWLINE_LF, NULL);

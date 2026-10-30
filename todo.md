@@ -1,6 +1,7 @@
 - [ ] MVP (sans interactive plots)
-    - [ ] Basic ascii rendering
-    - [ ] Ascii color rendering by default
+    - [X] Basic ascii rendering
+    - [ ] Redesign raster type backends
+    - [ ] Color pass
     - [ ] Axis labels
     - [ ] Automatic x and y ticks
     - [ ] Automatic x and y nums
@@ -21,4 +22,7 @@
         - [ ] Images
     - [ ] Other raster types
         - [ ] Block elements (1x1 and 2x2)
-    - [ ] Pure raster target + stb_image integration or something
+
+- [ ] Misc
+    - [ ] Make a nicer README.md
+    - [ ] Add large doc comment at the top of the header
