@@ -884,7 +884,7 @@ typedef struct {
     tp_f64* ys;
 
     tp_string8 label;
-} _tp_draw_pointslike;
+} _tp_info_pointslike;
 
 typedef struct _tp_draw_cmd {
     struct _tp_draw_cmd* next;
@@ -892,8 +892,8 @@ typedef struct _tp_draw_cmd {
     _tp_draw_cmd_kind kind;
 
     union {
-        _tp_draw_pointslike scatter;
-        _tp_draw_pointslike lines;
+        _tp_info_pointslike scatter;
+        _tp_info_pointslike lines;
     } info;
 } _tp_draw_cmd;
 
@@ -1058,6 +1058,9 @@ void tp_setup_axes(
 
     _tp_axes* axes = fig->axes + (arow * fig->subplot_cols + acol);
 
+    // Not recreating the entirety of the axes struct in case there are 
+    // already registered draw commands
+
     axes->flags = desc.flags;
 
     axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
@@ -1089,7 +1092,7 @@ void _tp_plot_pointslike(
         return;
     }
 
-    _tp_draw_pointslike pointslike = (_tp_draw_pointslike){
+    _tp_info_pointslike pointslike = (_tp_info_pointslike){
         .num_points = points_desc->num_points,
 
         .xs = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, points_desc->num_points),
@@ -1120,7 +1123,7 @@ void _tp_plot_pointslike(
         .kind = kind,
 
         // Note(Ian) this is definitely a bit of a hack, but if all the infos
-        // are in the same union, than any `_tp_draw_pointslike` in that union
+        // are in the same union, than any `_tp_info_pointslike` in that union
         // will occupy the same place in memory
         .info.scatter = pointslike
     };
@@ -1489,9 +1492,145 @@ void _tp_draw_target_encode(
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Draw context functions
+// Raster backend implementations
 // 
 ////////////////////////////////////////////////////////////////////////////////
+
+void _tp_color_draw_clear(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable
+) {
+    tp_rgb8 bg = *((tp_rgb8*)extra_data);
+
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+
+            dt->bg_cols[index] = bg;
+        }
+    }
+}
+
+void _tp_color_draw_point(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_i32 x, tp_i32 y
+) {
+    if (
+        x < 0 || x >= (tp_i32)graphable.w ||
+        y < 0 || y >= (tp_i32)graphable.h
+    ) {
+        return;
+    }
+
+    tp_rgb8 draw_fg = *((tp_rgb8*)extra_data);
+
+    tp_u32 index = (graphable.x + (tp_u32)x) +
+        (graphable.y + (tp_u32)y) * dt->width;
+
+    tp_rgb8 base_fg = dt->fg_cols[index];
+
+    dt->fg_cols[index] = (tp_rgb8){ 
+        (tp_u8)_TP_MIN(0xff, (tp_u32)base_fg.r + draw_fg.r),
+        (tp_u8)_TP_MIN(0xff, (tp_u32)base_fg.g + draw_fg.g),
+        (tp_u8)_TP_MIN(0xff, (tp_u32)base_fg.b + draw_fg.b),
+    };
+}
+
+void _tp_braille_draw_clear(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable
+) {
+    (void)extra_data;
+
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+
+            dt->codepoints[index] = 0x2800;
+        }
+    }
+}
+
+void _tp_braille_draw_point(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_i32 dot_x, tp_i32 dot_y
+) {
+    (void)extra_data;
+
+    if (
+        dot_x < 0 || dot_x >= (tp_i32)graphable.w * 2 ||
+        dot_y < 0 || dot_y >= (tp_i32)graphable.h * 4
+    ) {
+        return;
+    }
+
+    static const tp_u8 braille_pattern[] = {
+        0x1, 0x8,
+        0x2, 0x10,
+        0x4, 0x20,
+        0x40, 0x80,
+    };
+
+    tp_u32 char_x = (tp_u32)dot_x / 2;
+    tp_u32 char_y = (tp_u32)dot_y / 4;
+
+    tp_u32 lx = (tp_u32)dot_x % 2;
+    tp_u32 ly = (tp_u32)dot_y % 4;
+
+    tp_u32 index = (graphable.x + char_x) + (graphable.y + char_y) * dt->width;
+    dt->codepoints[index] |= braille_pattern[lx + ly * 2];
+}
+
+void _tp_ascii_draw_clear(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable
+) {
+    (void)extra_data; 
+
+    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+
+            dt->codepoints[index] = ' ';
+        }
+    }
+}
+
+void _tp_ascii_draw_point(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_i32 x, tp_i32 y
+) {
+    (void)extra_data;
+
+    if (
+        x < 0 || x >= (tp_i32)graphable.w ||
+        y < 0 || y >= (tp_i32)graphable.h
+    ) {
+        return;
+    }
+
+    tp_u32 index = (graphable.x + (tp_u32)x) +
+        (graphable.y + (tp_u32)y) * dt->width;
+
+    dt->codepoints[index] = U'#';
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Draw context functions --- Primary graph rendering
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+typedef void (_tp_draw_clear_func)(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable
+);
+
+typedef void (_tp_draw_point_func)(
+    void* extra_data, _tp_draw_target* dt, _tp_rect_u32 graphable,
+    tp_i32 x, tp_i32 y
+);
+
+typedef struct {
+    _tp_draw_clear_func* clear;
+    _tp_draw_point_func* point;
+} _tp_draw_funcs;
 
 typedef struct {
     tp_f64 xmin, xmax;
@@ -1504,12 +1643,20 @@ static const _tp_axes_bounds _tp_def_axes_bounds = {
 };
 
 typedef struct {
+    // How many times more dense the raster grid is from the character grid
+    // For example, braille's `raster_xmult` and `raster_ymult` would equal 2
+    // and 4 respectively
+    tp_f64 raster_xmult;
+    tp_f64 raster_ymult;
+
+    _tp_draw_funcs raster_draw_funcs;
+
     // Stored row-major, only the first (fig->subplot_rows * fig->subplot_cols)
     // elements are used
     _tp_axes_bounds bounds[TP_MAX_SUBPLOTS];
 } _tp_draw_context;
 
-_tp_axes_bounds _tp_pointslike_bounds(const _tp_draw_pointslike* pointslike) {
+_tp_axes_bounds _tp_pointslike_bounds(const _tp_info_pointslike* pointslike) {
     _tp_axes_bounds cur = _tp_def_axes_bounds;
 
     for (tp_u32 i = 0; i < pointslike->num_points; i++) {
@@ -1555,6 +1702,8 @@ void _tp_expand_bounds(_tp_axes_bounds* bounds, const _tp_draw_cmd* cmd) {
     bounds->ymax = _TP_MAX(bounds->ymax, cur.ymax);
 }
 
+// Computes the bounds for each subplot in the figure and write the results to 
+// `draw_context`
 void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
     for (tp_u32 i = 0; i < fig->subplot_rows * fig->subplot_cols; i++) {
         _tp_axes* axes = fig->axes + i;
@@ -1597,6 +1746,47 @@ void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
     }
 }
 
+void _tp_draw_context_init(tp_figure* fig, _tp_draw_context* draw_context) {
+    memset(draw_context, 0, sizeof(_tp_draw_context));
+
+    switch (fig->raster_type) {
+        case TP_RASTER_BRAILLE: {
+            *draw_context = (_tp_draw_context){ 
+                .raster_xmult = 2,
+                .raster_ymult = 4,
+
+                .raster_draw_funcs = (_tp_draw_funcs){
+                    .clear = _tp_braille_draw_clear,
+                    .point = _tp_braille_draw_point,
+                }
+            };
+        } break;
+
+        case TP_RASTER_ASCII: {
+            *draw_context = (_tp_draw_context){ 
+                .raster_xmult = 1,
+                .raster_ymult = 1,
+
+                .raster_draw_funcs = (_tp_draw_funcs){
+                    .clear = _tp_ascii_draw_clear,
+                    .point = _tp_ascii_draw_point,
+                }
+            };
+        } break;
+
+        case _TP_RASTER_COUNT: break;
+    }
+
+    _tp_compute_bounds(fig, draw_context);
+}
+
+typedef struct {
+    tp_f64 xscale;
+    tp_f64 yscale;
+    tp_f64 xoff;
+    tp_f64 yoff;
+} _tp_bound_transforms;
+
 // Computes transform parameters such that 
 //
 // x * xscale + xoff
@@ -1605,218 +1795,130 @@ void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
 // transform a given (x, y) from graph space to dot space, where dot space is
 // +y down and generally a direct factor of the character dimensions of the 
 // draw area
-//
-// For example, with braille, (xdots, ydots) = (2 * char_width, 4 * char_height)
-void _tp_get_bound_transforms(
+_tp_bound_transforms _tp_get_bound_transforms(
     const _tp_axes_bounds* bounds,
-    tp_f64 xdots, tp_f64 ydots,
-    tp_f64* xscale, tp_f64* yscale,
-    tp_f64* xoff, tp_f64* yoff
+    tp_f64 xdots, tp_f64 ydots
 ) {
-    *xscale = xdots / (bounds->xmax - bounds->xmin);
-    *yscale = -(ydots / (bounds->ymax - bounds->ymin));
+    tp_f64 xscale = xdots / (bounds->xmax - bounds->xmin);
+    tp_f64 yscale = -(ydots / (bounds->ymax - bounds->ymin));
 
-    *xoff = -bounds->xmin * (*xscale);
-    *yoff = -bounds->ymax * (*yscale);
-}
+    tp_f64 xoff = -bounds->xmin * xscale;
+    tp_f64 yoff = -bounds->ymax * yscale;
 
-////////////////////////////////////////////////////////////////////////////////
-// 
-// Common drawing stuff
-// 
-////////////////////////////////////////////////////////////////////////////////
-
-// Its definitely a little dumb doing this with a macro, but line drawing for a 
-// pointslike is something that I would have had to repeat enough times that I
-// felt this necessary.
-//
-// This macro is meant to go in a function that has variables `xscale`, `xoff`,
-// `yscale`, `yoff`, and `pointslike`. You must give a line to execute for each
-// point, where the point is at `x0`, `y0`.
-// 
-// See `_tp_braille_draw_lines` for an example
-#define _TP_DRAW_LINES(point_draw) do { \
-        tp_i32 x0 = (tp_i32)(pointslike->xs[0] * xscale + xoff); \
-        tp_i32 y0 = (tp_i32)(pointslike->ys[0] * yscale + yoff); \
-        for (tp_u32 i = 1; i < pointslike->num_points; i++) { \
-            tp_i32 x1 = (tp_i32)(pointslike->xs[i] * xscale + xoff); \
-            tp_i32 y1 = (tp_i32)(pointslike->ys[i] * yscale + yoff); \
-            tp_i32 dx = _TP_ABS(x1 - x0); \
-            tp_i32 dy = _TP_ABS(y1 - y0); \
-            tp_i32 sx = x0 < x1 ? 1 : -1; \
-            tp_i32 sy = y0 < y1 ? 1 : -1; \
-            tp_i32 err = (dx > dy ? dx : -dy) / 2; \
-            while (1) { \
-                point_draw; \
-                if (x0 >= x1 && y0 >= y1) { break; } \
-                tp_i32 new_err = err; \
-                if (err > -dx) {  \
-                    new_err -= dy; \
-                    x0 += sx; \
-                } \
-                if (err < dy) { \
-                    new_err += dx; \
-                    y0 += sy; \
-                } \
-                err = new_err; \
-            } \
-        } \
-    } while(0)
-
-////////////////////////////////////////////////////////////////////////////////
-// 
-// Braille drawing functions
-// 
-////////////////////////////////////////////////////////////////////////////////
-
-void _tp_braille_draw_begin(_tp_draw_target* dt, _tp_rect_u32 graphable) {
-    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
-        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
-            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
-
-            dt->codepoints[index] = 0x2800;
-        }
-    }
-}
-
-void _tp_braille_draw_point(
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    tp_i32 dot_x, tp_i32 dot_y
-) {
-    if (
-        dot_x < 0 || dot_x >= (tp_i32)graphable.w * 2 ||
-        dot_y < 0 || dot_y >= (tp_i32)graphable.h * 4
-    ) {
-        return;
-    }
-
-    static const tp_u8 braille_pattern[] = {
-        0x1, 0x8,
-        0x2, 0x10,
-        0x4, 0x20,
-        0x40, 0x80,
+    return (_tp_bound_transforms){
+        .xscale = xscale,
+        .yscale = yscale,
+        .xoff = xoff,
+        .yoff = yoff,
     };
-
-    tp_u32 char_x = (tp_u32)dot_x / 2;
-    tp_u32 char_y = (tp_u32)dot_y / 4;
-
-    tp_u32 lx = (tp_u32)dot_x % 2;
-    tp_u32 ly = (tp_u32)dot_y % 4;
-
-    tp_u32 index = (graphable.x + char_x) + (graphable.y + char_y) * dt->width;
-    dt->codepoints[index] |= braille_pattern[lx + ly * 2];
 }
 
-void _tp_braille_draw_scatter(
-    const _tp_draw_pointslike* pointslike,
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    _tp_axes_bounds bounds
+void _tp_draw_scatter(
+    _tp_draw_target* dt,
+    const _tp_info_pointslike* pointslike,
+    const _tp_bound_transforms* bt,
+    _tp_rect_u32 graphable,
+    _tp_draw_point_func* draw_point, void* extra_data
 ) {
-    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
-
-    _tp_get_bound_transforms(
-        &bounds, graphable.w * 2, graphable.h * 4,
-        &xscale, &yscale, &xoff, &yoff
-    );
-
     for (tp_u32 i = 0; i < pointslike->num_points; i++) {
-        tp_i32 dot_x = (tp_i32)(pointslike->xs[i] * xscale + xoff);
-        tp_i32 dot_y = (tp_i32)(pointslike->ys[i] * yscale + yoff);
+        tp_i32 dot_x = (tp_i32)(pointslike->xs[i] * bt->xscale + bt->xoff);
+        tp_i32 dot_y = (tp_i32)(pointslike->ys[i] * bt->yscale + bt->yoff);
 
-        _tp_braille_draw_point( dt, graphable, dot_x, dot_y);
+        draw_point(extra_data, dt, graphable, dot_x, dot_y);
     }
 }
 
-void _tp_braille_draw_lines(
-    const _tp_draw_pointslike* pointslike,
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    _tp_axes_bounds bounds
+void _tp_draw_lines(
+    _tp_draw_target* dt,
+    const _tp_info_pointslike* pointslike,
+    const _tp_bound_transforms* bt,
+    _tp_rect_u32 graphable,
+    _tp_draw_point_func* draw_point, void* extra_data
 ) {
-    if (pointslike->num_points <= 1) { return; }
+    tp_i32 x0 = (tp_i32)(pointslike->xs[0] * bt->xscale + bt->xoff);
+    tp_i32 y0 = (tp_i32)(pointslike->ys[0] * bt->yscale + bt->yoff);
 
-    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
+    for (tp_u32 i = 1; i < pointslike->num_points; i++) {
+        tp_i32 x1 = (tp_i32)(pointslike->xs[i] * bt->xscale + bt->xoff);
+        tp_i32 y1 = (tp_i32)(pointslike->ys[i] * bt->yscale + bt->yoff);
 
-    _tp_get_bound_transforms(
-        &bounds, graphable.w * 2, graphable.h * 4,
-        &xscale, &yscale, &xoff, &yoff
-    );
+        tp_i32 dx = _TP_ABS(x1 - x0);
+        tp_i32 dy = _TP_ABS(y1 - y0);
+        tp_i32 sx = x0 < x1 ? 1 : -1;
+        tp_i32 sy = y0 < y1 ? 1 : -1;
 
-    _TP_DRAW_LINES(_tp_braille_draw_point(dt, graphable, x0, y0));
-}
+        tp_i32 err = (dx > dy ? dx : -dy) / 2;
+        for (tp_u32 worstcase = 0; worstcase < 0xffffff; worstcase++) {
+            draw_point(extra_data, dt, graphable, x0, y0);
 
-////////////////////////////////////////////////////////////////////////////////
-// 
-// Ascii drawing functions
-// 
-////////////////////////////////////////////////////////////////////////////////
+            if (x0 >= x1 && y0 >= y1) { break; }
 
-void _tp_ascii_draw_begin(_tp_draw_target* dt, _tp_rect_u32 graphable) {
-    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
-        for (tp_u32 lx = 0; lx < graphable.w; lx++) {
-            tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
+            tp_i32 new_err = err;
+            if (err > -dx) { 
+                new_err -= dy;
+                x0 += sx;
+            }
 
-            dt->codepoints[index] = ' ';
+            if (err < dy) {
+                new_err += dx;
+                y0 += sy;
+            }
+
+            err = new_err;
         }
     }
 }
 
-void _tp_ascii_draw_point(
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    tp_i32 x, tp_i32 y
+void _tp_draw_axes_pass(
+    _tp_draw_target* dt,
+    const _tp_draw_context* context, const _tp_axes* axes,
+    _tp_rect_u32 graphable, const _tp_axes_bounds* bounds,
+    tp_b8 colorpass
 ) {
-    if (
-        x < 0 || x >= (tp_i32)graphable.w ||
-        y < 0 || y >= (tp_i32)graphable.h
-    ) {
-        return;
+    _tp_draw_funcs funcs = context->raster_draw_funcs;
+
+    if (colorpass) {
+        funcs = (_tp_draw_funcs){
+            .clear = _tp_color_draw_clear,
+            .point = _tp_color_draw_point,
+        };
     }
 
-    tp_u32 index = (graphable.x + (tp_u32)x) +
-        (graphable.y + (tp_u32)y) * dt->width;
+    // TODO: axes background color
+    funcs.clear(NULL, dt, graphable);
 
-    dt->codepoints[index] = U'#';
-}
+    _tp_bound_transforms transforms = colorpass ? 
+        _tp_get_bound_transforms(bounds, graphable.w, graphable.h) :
+        _tp_get_bound_transforms(
+            bounds,
+            context->raster_xmult * graphable.w,
+            context->raster_ymult * graphable.h
+        );
 
-void _tp_ascii_draw_scatter(
-    const _tp_draw_pointslike* pointslike,
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    _tp_axes_bounds bounds
-) {
-    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
+    for (_tp_draw_cmd* cmd = axes->first_draw; cmd != NULL; cmd = cmd->next) {
+        switch (cmd->kind) {
+            case _TP_DRAW_NONE: break;
 
-    _tp_get_bound_transforms(
-        &bounds, graphable.w, graphable.h,
-        &xscale, &yscale, &xoff, &yoff
-    );
+            case _TP_DRAW_SCATTER: {
+                _tp_draw_scatter(
+                    dt, &cmd->info.scatter, &transforms,
+                    graphable, funcs.point, NULL
+                );
+            } break;
 
-    for (tp_u32 i = 0; i < pointslike->num_points; i++) {
-        tp_i32 dot_x = (tp_i32)(pointslike->xs[i] * xscale + xoff);
-        tp_i32 dot_y = (tp_i32)(pointslike->ys[i] * yscale + yoff);
-
-        _tp_ascii_draw_point( dt, graphable, dot_x, dot_y);
+            case _TP_DRAW_LINES: {
+                _tp_draw_lines(
+                    dt, &cmd->info.lines, &transforms,
+                    graphable, funcs.point, NULL
+                );
+            } break;
+        }
     }
-}
-
-void _tp_ascii_draw_lines(
-    const _tp_draw_pointslike* pointslike,
-    _tp_draw_target* dt, _tp_rect_u32 graphable,
-    _tp_axes_bounds bounds
-) {
-    if (pointslike->num_points <= 1) { return; }
-
-    tp_f64 xscale = 1.0, yscale = 1.0, xoff = 0.0, yoff = 0.0;
-
-    _tp_get_bound_transforms(
-        &bounds, graphable.w, graphable.h,
-        &xscale, &yscale, &xoff, &yoff
-    );
-
-    _TP_DRAW_LINES(_tp_ascii_draw_point(dt, graphable, x0, y0));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Primary rendering functions
+// High level drawing functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -1872,11 +1974,18 @@ _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
 }
 
 void _tp_draw_axes(
-    tp_figure* fig,
-    _tp_axes* axes, _tp_draw_target* dt, 
-    _tp_rect_u32 drawable, _tp_rect_u32 graphable,
-    _tp_axes_bounds bounds
+    const tp_figure* fig, _tp_draw_target* dt, 
+    tp_u32 axes_row, tp_u32 axes_col,
+    const _tp_fig_layout* layout,
+    const _tp_draw_context* context
 ) {
+    tp_u32 axes_index = axes_col + axes_row * fig->subplot_cols;
+    const _tp_axes* axes = fig->axes + axes_index;
+
+    _tp_rect_u32 drawable = layout->drawable[axes_index];
+    _tp_rect_u32 graphable = layout->graphable[axes_index];
+    _tp_axes_bounds bounds = context->bounds[axes_index];
+
     _tp_draw_hcenter_text(dt, drawable, axes->title, 0);
     
     tp_u32 origin = U'┗';
@@ -1909,57 +2018,7 @@ void _tp_draw_axes(
 
     dt->codepoints[o_index] = origin;
 
-    if (fig->raster_type == TP_RASTER_BRAILLE) {
-        _tp_braille_draw_begin(dt, graphable);
-
-        for (
-            _tp_draw_cmd* cmd = axes->first_draw;
-            cmd != NULL; cmd = cmd->next
-        ) {
-            switch (cmd->kind) {
-                case _TP_DRAW_NONE: break;
-
-                case _TP_DRAW_SCATTER: {
-                    _tp_braille_draw_scatter(
-                        &cmd->info.scatter, dt,
-                        graphable, bounds
-                    );
-                } break;
-
-                case _TP_DRAW_LINES: {
-                    _tp_braille_draw_lines(
-                        &cmd->info.lines, dt,
-                        graphable, bounds
-                    );
-                } break;
-            }
-        }
-    } else if (fig->raster_type == TP_RASTER_ASCII) {
-        _tp_ascii_draw_begin(dt, graphable);
-
-        for (
-            _tp_draw_cmd* cmd = axes->first_draw;
-            cmd != NULL; cmd = cmd->next
-        ) {
-            switch (cmd->kind) {
-                case _TP_DRAW_NONE: break;
-
-                case _TP_DRAW_SCATTER: {
-                    _tp_ascii_draw_scatter(
-                        &cmd->info.scatter, dt,
-                        graphable, bounds
-                    );
-                } break;
-
-                case _TP_DRAW_LINES: {
-                    _tp_ascii_draw_lines(
-                        &cmd->info.lines, dt,
-                        graphable, bounds
-                    );
-                } break;
-            }
-        }
-    }
+    _tp_draw_axes_pass(dt, context, axes, graphable, &bounds, _TP_FALSE);
 
     if (!fig->monochrome) {
         // TODO: color pass
@@ -1967,7 +2026,7 @@ void _tp_draw_axes(
 }
 
 void _tp_draw_figure(
-    tp_figure* fig, _tp_draw_target* dt,
+    const tp_figure* fig, _tp_draw_target* dt,
     const _tp_fig_layout* layout, const _tp_draw_context* context,
     _tp_rect_u32 area
 ) {
@@ -1975,13 +2034,7 @@ void _tp_draw_figure(
 
     for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
         for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
-            tp_u32 index = col + row * fig->subplot_cols;
-
-            _tp_draw_axes(
-                fig, fig->axes + index, dt,
-                layout->drawable[index], layout->graphable[index],
-                context->bounds[index]
-            );
+            _tp_draw_axes(fig, dt, row, col, layout, context);
         }
     }
 }
@@ -2008,7 +2061,7 @@ tp_string8 tp_render_utf8(
     _tp_layout_axes(fig, &layout, draw_area);
 
     _tp_draw_context draw_context = { 0 };
-    _tp_compute_bounds(fig, &draw_context);
+    _tp_draw_context_init(fig, &draw_context);
 
     _tp_draw_figure(fig, &draw_target, &layout, &draw_context, draw_area);
 

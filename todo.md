@@ -1,6 +1,6 @@
 - [ ] MVP (sans interactive plots)
     - [X] Basic ascii rendering
-    - [ ] Redesign raster type backends
+    - [X] Redesign raster type backends
     - [ ] Color pass
     - [ ] Axis labels
     - [ ] Automatic x and y ticks
