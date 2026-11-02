@@ -1,9 +1,9 @@
 - [ ] MVP (sans interactive plots)
     - [X] Basic ascii rendering
     - [X] Redesign raster type backends
-    - [ ] Color pass
+    - [X] Color pass
         - [X] Basic pass
-        - [ ] Fix braille vs ascii based coloring differences
+        - [X] Fix braille vs ascii based coloring differences
     - [ ] Axis labels
     - [ ] Automatic x and y ticks
     - [ ] Automatic x and y nums
