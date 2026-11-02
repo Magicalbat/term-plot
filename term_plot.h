@@ -147,6 +147,8 @@ typedef struct {
     tp_string8 ylabel;
     tp_string8 title;
 
+    tp_rgb8 bg_col;
+
     // Minimum x bound for the axes
     // If both `xmin` and `xmax` are 0, the x bounds will fit to the data
     tp_f64 xmin;
@@ -177,6 +179,9 @@ typedef struct {
     tp_f64* ys;
 
     tp_string8 label;
+
+    // If `col` is { 0, 0, 0 }, it will get overriden to the default color
+    tp_rgb8 col;
 } tp_points_desc;
 
 typedef struct {
@@ -278,6 +283,8 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 
 #define _TP_KiB(n) ((tp_u64)(n) << 10)
 #define _TP_MiB(n) ((tp_u64)(n) << 20)
+
+#define _TP_ARR_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define _TP_SLL_PUSH_BACK(f, l, n) ((f) == NULL ? \
     ((f) = (l) = (n)) :                       \
@@ -839,6 +846,20 @@ tp_u32 _tp_str8_width(tp_string8 str) {
 #define _TP_ANSI_BG_TEMP "\x1b[48;2;000;000;000m"
 #define _TP_ANSI_COL_SIZE (sizeof(_TP_ANSI_FG_TEMP) - 1)
 
+// These are from the pico-8 color palette
+static const tp_rgb8 _tp_palette[] = {
+    { 0x29, 0xad, 0xff },
+    { 0xff, 0x00, 0x4d },
+    { 0x00, 0xe4, 0x36 },
+    { 0xff, 0xa3, 0x00 },
+    { 0xff, 0x77, 0xa8 },
+    { 0xff, 0xec, 0x27 },
+    { 0x83, 0x76, 0x9c },
+    { 0x00, 0x87, 0x51 },
+    { 0x7e, 0x25, 0x53 },
+    { 0xff, 0xf1, 0xe8 },
+};
+
 tp_b32 _tp_rgb8_eq(tp_rgb8 a, tp_rgb8 b) {
     return a.r == b.r && a.g == b.g && a.b == b.b;
 }
@@ -884,6 +905,8 @@ typedef struct {
     tp_f64* ys;
 
     tp_string8 label;
+
+    tp_rgb8 col;
 } _tp_info_pointslike;
 
 typedef struct _tp_draw_cmd {
@@ -903,6 +926,9 @@ typedef struct {
     tp_string8 xlabel;
     tp_string8 ylabel;
     tp_string8 title;
+
+    tp_u32 palette_index;
+    tp_rgb8 bg_col;
 
     // If both `xmin` and `xmax` are 0, the x bounds will fit to the data
     tp_f64 xmin;
@@ -1067,6 +1093,8 @@ void tp_setup_axes(
     axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
     axes->title = _tp_str8_copy(fig->arena, desc.title);
 
+    axes->bg_col = desc.bg_col;
+
     axes->xmin = desc.xmin;
     axes->xmax = desc.xmax;
     axes->ymin = desc.ymin;
@@ -1092,6 +1120,10 @@ void _tp_plot_pointslike(
         return;
     }
 
+    _tp_axes* axes = fig->axes + (
+        points_desc->axes_row * fig->subplot_cols + points_desc->axes_col
+    );
+
     _tp_info_pointslike pointslike = (_tp_info_pointslike){
         .num_points = points_desc->num_points,
 
@@ -1100,6 +1132,11 @@ void _tp_plot_pointslike(
 
         .label = _tp_str8_copy(fig->arena, points_desc->label),
     };
+
+    pointslike.col = _tp_rgb8_eq(points_desc->col, (tp_rgb8){ 0 }) ?
+        _tp_palette[axes->palette_index] : points_desc->col;
+
+    axes->palette_index = (axes->palette_index + 1) % _TP_ARR_LEN(_tp_palette);
 
     if (points_desc->xs == NULL) {
         for (tp_u32 i = 0; i < pointslike.num_points; i++) {
@@ -1127,10 +1164,6 @@ void _tp_plot_pointslike(
         // will occupy the same place in memory
         .info.scatter = pointslike
     };
-
-    _tp_axes* axes = fig->axes + (
-        points_desc->axes_row * fig->subplot_cols + points_desc->axes_col
-    );
 
     _TP_SLL_PUSH_BACK(axes->first_draw, axes->last_draw, cmd);
 }
@@ -1506,6 +1539,7 @@ void _tp_color_draw_clear(
             tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
 
             dt->bg_cols[index] = bg;
+            dt->fg_cols[index] = (tp_rgb8){ 0 };
         }
     }
 }
@@ -1838,6 +1872,8 @@ void _tp_draw_lines(
     tp_i32 x0 = (tp_i32)(pointslike->xs[0] * bt->xscale + bt->xoff);
     tp_i32 y0 = (tp_i32)(pointslike->ys[0] * bt->yscale + bt->yoff);
 
+    draw_point(extra_data, dt, graphable, x0, y0);
+
     for (tp_u32 i = 1; i < pointslike->num_points; i++) {
         tp_i32 x1 = (tp_i32)(pointslike->xs[i] * bt->xscale + bt->xoff);
         tp_i32 y1 = (tp_i32)(pointslike->ys[i] * bt->yscale + bt->yoff);
@@ -1849,8 +1885,6 @@ void _tp_draw_lines(
 
         tp_i32 err = (dx > dy ? dx : -dy) / 2;
         for (tp_u32 worstcase = 0; worstcase < 0xffffff; worstcase++) {
-            draw_point(extra_data, dt, graphable, x0, y0);
-
             if (x0 >= x1 && y0 >= y1) { break; }
 
             tp_i32 new_err = err;
@@ -1865,6 +1899,8 @@ void _tp_draw_lines(
             }
 
             err = new_err;
+
+            draw_point(extra_data, dt, graphable, x0, y0);
         }
     }
 }
@@ -1884,8 +1920,12 @@ void _tp_draw_axes_pass(
         };
     }
 
-    // TODO: axes background color
-    funcs.clear(NULL, dt, graphable);
+    if (colorpass) {
+        tp_rgb8 bg = axes->bg_col;
+        funcs.clear(&bg, dt, graphable);
+    } else {
+        funcs.clear(NULL, dt, graphable);
+    }
 
     _tp_bound_transforms transforms = colorpass ? 
         _tp_get_bound_transforms(bounds, graphable.w, graphable.h) :
@@ -1900,16 +1940,22 @@ void _tp_draw_axes_pass(
             case _TP_DRAW_NONE: break;
 
             case _TP_DRAW_SCATTER: {
+                tp_rgb8 col = cmd->info.scatter.col;
+                void* extra_data = colorpass ? &col : NULL;
+                
                 _tp_draw_scatter(
                     dt, &cmd->info.scatter, &transforms,
-                    graphable, funcs.point, NULL
+                    graphable, funcs.point, extra_data
                 );
             } break;
 
             case _TP_DRAW_LINES: {
+                tp_rgb8 col = cmd->info.lines.col;
+                void* extra_data = colorpass ? &col : NULL;
+
                 _tp_draw_lines(
                     dt, &cmd->info.lines, &transforms,
-                    graphable, funcs.point, NULL
+                    graphable, funcs.point, extra_data
                 );
             } break;
         }
@@ -2021,7 +2067,7 @@ void _tp_draw_axes(
     _tp_draw_axes_pass(dt, context, axes, graphable, &bounds, _TP_FALSE);
 
     if (!fig->monochrome) {
-        // TODO: color pass
+        _tp_draw_axes_pass(dt, context, axes, graphable, &bounds, _TP_TRUE);
     }
 }
 

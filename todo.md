@@ -2,6 +2,8 @@
     - [X] Basic ascii rendering
     - [X] Redesign raster type backends
     - [ ] Color pass
+        - [X] Basic pass
+        - [ ] Fix braille vs ascii based coloring differences
     - [ ] Axis labels
     - [ ] Automatic x and y ticks
     - [ ] Automatic x and y nums
@@ -9,6 +11,7 @@
     - [ ] Override x and y ticks?
 
 - [ ] Full MVP (Interactive plots)
+    - [ ] Console abstraction
     - [ ] Basic interface + focus logic
     - [ ] Panning
     - [ ] Zooming
