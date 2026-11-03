@@ -87,7 +87,8 @@ int main(void) {
     }
 
     tp_f64 xticks[] = {
-        0.0, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI,
+        0, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI,
+        123456,
     };
 
     tp_f64 yticks[] = {
@@ -96,7 +97,8 @@ int main(void) {
 
     tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
         .title = TP_STR8("Here is a subplot"),
-        .flags = TP_AXES_NO_YNUMS | TP_AXES_NO_XNUMS,
+
+        .flags = 0,
 
         .xlabel = TP_STR8("Time"),
         .ylabel = TP_STR8("Ians"),
@@ -113,6 +115,12 @@ int main(void) {
 
         .xlabel = TP_STR8("this is the x axis"),
         .ylabel = TP_STR8("Colors"),
+
+        .num_xticks = ARR_LEN(xticks),
+        .xticks = xticks,
+
+        .num_yticks = ARR_LEN(yticks),
+        .yticks = yticks,
     });
 
     tp_string8 rendered = tp_render_utf8(fig, TP_NEWLINE_LF, NULL);

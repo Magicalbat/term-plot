@@ -276,7 +276,7 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 #include <string.h> // memset, memcpy
 #include <math.h>
 
-#if !defined(TP_FATAL_ERROR) || !defined(TP_WARN)
+#if !defined(TP_FATAL_ERROR) || !defined(TP_WARN) || !defined(TP_SNPRINTF)
 #   include <stdio.h>
 #endif
 
@@ -290,6 +290,10 @@ void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
 
 #ifndef TP_WARN
 #   define TP_WARN(msg) fprintf(stderr, (msg))
+#endif
+
+#ifndef TP_SNPRINTF
+#   define TP_SNPRINTF snprintf
 #endif
 
 #define _TP_ABS(x) ((x) < 0 ? -(x) : (x))
@@ -1316,8 +1320,8 @@ _tp_fixed_size _tp_axes_fixed_size(
     _tp_axes* axes = fig->axes + axes_index;
 
     _tp_fixed_size size = {
-        // (y label & pad) + y nums + y axis
-        .left = 2 + TP_AXIS_NUM_CHARS + 1,
+        // (y label & pad) + (y nums + pad) + y axis
+        .left = 2 + (TP_AXIS_NUM_CHARS + 1) + 1,
 
         // (title & y scale & pad)
         .top = _TP_TITLE_ROWS,
@@ -2153,8 +2157,16 @@ void _tp_draw_axes(
         &bounds, graphable.w, graphable.h
     );
 
-    // Drawing ticks
-    if ((axes->flags & TP_AXES_NO_XTICKS) != TP_AXES_NO_XTICKS) {
+    tp_b8 has_xticks = (axes->flags & TP_AXES_NO_XTICKS) != TP_AXES_NO_XTICKS;
+    tp_b8 has_yticks = (axes->flags & TP_AXES_NO_YTICKS) != TP_AXES_NO_YTICKS;
+    tp_b8 has_xnums = (axes->flags & TP_AXES_NO_XNUMS) != TP_AXES_NO_XNUMS;
+    tp_b8 has_ynums = (axes->flags & TP_AXES_NO_YNUMS) != TP_AXES_NO_YNUMS;
+
+    // +1 for null terminator
+    tp_u8 num_cstr[TP_AXIS_NUM_CHARS + 1] = { 0 };
+
+    // Drawing x ticks
+    if (has_xticks || has_xnums) {
         tp_u32 num_xticks = axes->num_xticks;
         tp_f64* xticks = axes->xticks;
 
@@ -2162,17 +2174,50 @@ void _tp_draw_axes(
             // TODO: compute automatic ticks
         }
 
+        tp_u32 prev_draw_end_x = 0;
+
         for (tp_u32 i = 0; i < num_xticks; i++) {
             tp_i32 x = (tp_i32)(xticks[i] * ax_t.xscale + ax_t.xoff);
 
             if (x < 0 || x > (tp_i32)graphable.w) { continue; }
 
-            tp_u32 index = (graphable.x + (tp_u32)x) + xaxis_y * dt->width;
-            dt->codepoints[index] = xtick;
+            if (has_xticks) {
+                tp_u32 index = (graphable.x + (tp_u32)x) + xaxis_y * dt->width;
+                dt->codepoints[index] = xtick;
+            }
+
+            if (has_xnums) {
+                tp_i32 written = TP_SNPRINTF(
+                    (char*)num_cstr, sizeof(num_cstr),
+                    "%*g", TP_AXIS_NUM_CHARS, xticks[i]
+                );
+                written = _TP_MIN(written, TP_AXIS_NUM_CHARS);
+
+                tp_i32 width = TP_AXIS_NUM_CHARS;
+                for (tp_i32 j = 0; j < written && num_cstr[j] == ' '; j++) {
+                    width--;
+                }
+
+                tp_i32 unclamped_start_x = (tp_i32)graphable.x + x - width/2;
+                tp_u32 draw_start_x = (tp_u32)_TP_MAX(
+                    unclamped_start_x, (tp_i32)drawable.x
+                );
+
+                if (draw_start_x <= prev_draw_end_x + 1) { continue; }
+
+                tp_u32 draw_start = draw_start_x + (xaxis_y + 1) * dt->width;
+                for (tp_u32 j = 0; j < (tp_u32)width; j++) {
+                    dt->codepoints[draw_start + j] =
+                        num_cstr[TP_AXIS_NUM_CHARS - width + (tp_i32)j];
+                }
+
+                prev_draw_end_x = draw_start_x + (tp_u32)width;
+            }
         }
     }
 
-    if ((axes->flags & TP_AXES_NO_YTICKS) != TP_AXES_NO_YTICKS) {
+    // Drawing y ticks
+    if (has_yticks || has_ynums) {
         tp_u32 num_yticks = axes->num_yticks;
         tp_f64* yticks = axes->yticks;
 
@@ -2180,13 +2225,33 @@ void _tp_draw_axes(
             // TODO: compute automatic ticks
         }
 
+        tp_u32 draw_num_start = yaxis_x >= drawable.x + TP_AXIS_NUM_CHARS + 1 ?
+            yaxis_x - TP_AXIS_NUM_CHARS - 1 : drawable.x;
+
         for (tp_u32 i = 0; i < num_yticks; i++) {
             tp_i32 y = (tp_i32)(yticks[i] * ax_t.yscale + ax_t.yoff);
 
             if (y < 0 || y > (tp_i32)graphable.h) { continue; }
 
-            tp_u32 index = yaxis_x + (graphable.y + (tp_u32)y) * dt->width;
-            dt->codepoints[index] = ytick;
+            if (has_yticks) {
+                tp_u32 index = yaxis_x + (graphable.y + (tp_u32)y) * dt->width;
+                dt->codepoints[index] = ytick;
+            }
+
+            if (has_ynums) {
+                tp_i32 written = TP_SNPRINTF(
+                    (char*)num_cstr, sizeof(num_cstr),
+                    "%*g", TP_AXIS_NUM_CHARS, yticks[i]
+                );
+                written = _TP_MIN(written, TP_AXIS_NUM_CHARS);
+
+                tp_u32 draw_start = draw_num_start +
+                    (graphable.y + (tp_u32)y) * dt->width;
+
+                for (tp_i32 j = 0; j < written; j++) {
+                    dt->codepoints[draw_start + (tp_u32)j] = num_cstr[j];
+                }
+            }
         }
     }
 

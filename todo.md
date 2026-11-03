@@ -10,9 +10,8 @@
     - [ ] x and y ticks
         - [ ] Automatic ticks
         - [X] Override ticks
-    - [ ] Automatic x and y nums
+    - [X] x and y nums
     - [ ] Legends
-    - [ ] Override x and y ticks?
 
 - [ ] Full MVP (Interactive plots)
     - [ ] Console abstraction
