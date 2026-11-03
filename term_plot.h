@@ -716,6 +716,14 @@ static const tp_u8 _tp_utf8_lengths[] = {
     0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 4, 0
 };
 
+static const tp_u8 _tp_utf8_first_byte_masks[] = {
+    0, 0x7f, 0x1f, 0x0f, 0x07
+};
+
+static const tp_u8 _tp_utf8_final_shifts[] = {
+    0, 18, 12, 6, 0
+};
+
 // Returns the number of unicode codepoints in the utf8 string
 // Will parse so long as the utf8 stream is valid
 tp_u32 _tp_utf32_from_utf8_size(tp_string8 str) {
@@ -735,13 +743,6 @@ tp_u32 _tp_utf32_from_utf8_size(tp_string8 str) {
 //
 // Returns the number of codepoints written
 tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
-    static const tp_u8 first_byte_masks[] = {
-        0, 0x7f, 0x1f, 0x0f, 0x07
-    };
-    static const tp_u8 final_shifts[] = {
-        0, 18, 12, 6, 0
-    };
-
     tp_u32 out_pos = 0;
     tp_u32 cur_len = 0;
 
@@ -755,7 +756,9 @@ tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
 
         if (cur_len == 0 || i + cur_len > str.size) { break; }
 
-        tp_u32 codepoint = (tp_u32)(first_byte & first_byte_masks[cur_len]);
+        tp_u32 codepoint = (tp_u32)(
+            first_byte & _tp_utf8_first_byte_masks[cur_len]
+        );
         codepoint <<= 18;
 
         switch (cur_len) {
@@ -767,7 +770,7 @@ tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
             default: break;
         }
 
-        codepoint >>= final_shifts[cur_len];
+        codepoint >>= _tp_utf8_final_shifts[cur_len];
         out[out_pos] = codepoint;
     }
 
@@ -824,6 +827,32 @@ tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
     }
 
     return size;
+}
+
+tp_u32 _tp_utf8_decode(tp_u8* str, tp_u64 cap, tp_u32* out) {
+    tp_u8 first_byte = str[0];
+    tp_u32 len = _tp_utf8_lengths[first_byte >> 3];
+
+    if (len == 0 || len > cap) { return 0; }
+
+    tp_u32 codepoint = (tp_u32)(
+        first_byte & _tp_utf8_first_byte_masks[len]
+    );
+    codepoint <<= 18;
+
+    switch (len) {
+        case 4: codepoint |= ((tp_u32)str[3] & 0x3f);
+        // fallthrough
+        case 3: codepoint |= (((tp_u32)str[2] & 0x3f) << 6);
+        // fallthrough
+        case 2: codepoint |= (((tp_u32)str[1] & 0x3f) << 12);
+        default: break;
+    }
+
+    codepoint >>= _tp_utf8_final_shifts[len];
+    *out = codepoint;
+
+    return len;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1937,6 +1966,7 @@ void _tp_draw_lines(
 void _tp_draw_hcenter_text(
     _tp_draw_target* dt, _tp_rect_u32 area,
     tp_string8 text, tp_u32 y_off
+    //tp_rgb8 fg, tp_rgb8 bg
 ) {
     if (text.size == 0) { return; }
 
@@ -1954,6 +1984,47 @@ void _tp_draw_hcenter_text(
     );
 
     _tp_utf32_from_utf8(text, out_codes, text_width);
+
+    for (tp_u32 i = 0; i < text_width; i++) {
+    }
+}
+
+// Draws the given text vertically centered within the draw area at the given
+// x offset
+//
+// If there is not enough space to fit the text, it will be clipped and show 
+// the first `area.h` codepoints
+void _tp_draw_vcenter_text(
+    _tp_draw_target* dt, _tp_rect_u32 area,
+    tp_string8 text, tp_u32 x_off
+) {
+    if (text.size == 0) { return; }
+
+    x_off = _TP_MIN(x_off, area.w - 1);
+
+    tp_u32 text_height = _tp_str8_width(text);
+    tp_u32 fig_mid = area.h / 2;
+
+    tp_u32 draw_offset = text_height / 2 > fig_mid ?
+        0 : fig_mid - text_height / 2;
+    text_height = _TP_MIN(text_height, area.h - draw_offset);
+
+    tp_u64 byte_pos = 0;
+    tp_u32 cur_len = 1;
+    for (
+        tp_u32 y_off = 0;
+        y_off < text_height && byte_pos < text.size && cur_len > 0;
+        y_off++, byte_pos += cur_len
+    ) {
+        tp_u32 codepoint = ' ';
+        cur_len = _tp_utf8_decode(
+            text.str + byte_pos, text.size - byte_pos, &codepoint
+        );
+
+        tp_u32 index = (area.x + x_off) +
+            (area.y + draw_offset + y_off) * dt->width;
+        dt->codepoints[index] = codepoint;
+    }
 }
 
 _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
@@ -2022,8 +2093,28 @@ void _tp_draw_axes(
     }
 
     tp_u32 o_index = (graphable.x - 1) + (graphable.y + graphable.h) * dt->width; 
-
     dt->codepoints[o_index] = origin;
+
+    if (axes->xlabel.size > 0) {
+        _tp_rect_u32 xlabel_area = {
+            .x = graphable.x, .w = graphable.w,
+            .y = drawable.y, .h = drawable.h,
+        };
+
+        _tp_draw_hcenter_text(
+            dt, xlabel_area, axes->xlabel,
+            graphable.y + graphable.h + 2
+        );
+    }
+
+    if (axes->ylabel.size > 0) {
+        _tp_rect_u32 ylabel_area = {
+            .x = drawable.x, .w = drawable.w,
+            .y = graphable.y, .h = graphable.h
+        };
+
+        _tp_draw_vcenter_text(dt, ylabel_area, axes->ylabel, 0);
+    }
 
     context->raster_clear(dt, graphable);
 

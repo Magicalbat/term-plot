@@ -86,10 +86,16 @@ int main(void) {
 
     tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
         .title = TP_STR8("Here is a subplot"),
+
+        .xlabel = TP_STR8("Time"),
+        .ylabel = TP_STR8("Ians"),
     });
 
     tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
         .title = TP_STR8("Another one"),
+
+        .xlabel = TP_STR8("this is the x axis"),
+        .ylabel = TP_STR8("Colors"),
     });
 
     tp_string8 rendered = tp_render_utf8(fig, TP_NEWLINE_LF, NULL);

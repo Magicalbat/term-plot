@@ -4,8 +4,10 @@
     - [X] Color pass
         - [X] Basic pass
         - [X] Fix braille vs ascii based coloring differences
-    - [ ] Axis labels
-    - [ ] Automatic x and y ticks
+    - [X] Axis labels
+    - [ ] x and y ticks
+        - [ ] Automatic ticks
+        - [ ] Override ticks
     - [ ] Automatic x and y nums
     - [ ] Legends
     - [ ] Override x and y ticks?
