@@ -69,7 +69,7 @@ typedef enum {
 
 // Number of characters to display for the axis numbers
 #ifndef TP_AXIS_NUM_CHARS
-#   define TP_AXIS_NUM_CHARS 6
+#   define TP_AXIS_NUM_CHARS 7
 #endif
 
 typedef struct {
@@ -136,7 +136,7 @@ typedef struct {
     // Defines the number of characters around the entire figure in each 
     // direction.
     // This will only take effect if `override_margin` is true
-    // Margin by default is 1
+    // Margin by default is 1 character
     tp_u32 custom_margin;
 } tp_figure_desc;
 
@@ -164,6 +164,22 @@ typedef struct {
     // Maximum y bound for the axes
     // If both `ymin` and `ymax` are 0, the y bounds will fit to the data
     tp_f64 ymax;
+
+    // Number of elements in the `xticks` array
+    tp_u32 num_xticks;
+
+    // Number of elements in the `yticks` array
+    tp_u32 num_yticks;
+
+    // By default, x-axis tick marks will be drawn automatically from the axis
+    // bounds, but you can override them with `xticks`. Make sure to also set
+    // `num_xticks` if you are overriding this. Will be ignored if NULL
+    tp_f64* xticks;
+
+    // By default, y-axis tick marks will be drawn automatically from the axis
+    // bounds, but you can override them with `yticks`. Make sure to also set
+    // `num_yticks` if you are overriding this. Will be ignored if NULL
+    tp_f64* yticks;
 } tp_axes_desc;
 
 typedef struct {
@@ -206,6 +222,8 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc);
 void tp_end(tp_figure* fig);
 
 // Calls made to out of bounds axes will be ignored
+// This should generally only be called once per axis because subsequent calls
+// technically can leak memory
 void tp_setup_axes(
     tp_figure* fig, tp_u32 arow, tp_u32 acol,
     const tp_axes_desc* axes_desc
@@ -998,6 +1016,12 @@ typedef struct {
     tp_f64 ymin;
     tp_f64 ymax;
 
+    tp_u32 num_xticks;
+    tp_u32 num_yticks;
+
+    tp_f64* xticks;
+    tp_f64* yticks;
+
     _tp_draw_cmd* first_draw;
     _tp_draw_cmd* last_draw;
 } _tp_axes;
@@ -1152,6 +1176,18 @@ void tp_setup_axes(
     axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
     axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
     axes->title = _tp_str8_copy(fig->arena, desc.title);
+
+    if (desc.num_xticks > 0) {
+        axes->num_xticks = desc.num_xticks;
+        axes->xticks = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, axes->num_xticks);
+        memcpy(axes->xticks, desc.xticks, sizeof(tp_f64) * axes->num_xticks);
+    }
+
+    if (desc.num_yticks > 0) {
+        axes->num_yticks = desc.num_yticks;
+        axes->yticks = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, axes->num_yticks);
+        memcpy(axes->yticks, desc.yticks, sizeof(tp_f64) * axes->num_yticks);
+    }
 
     axes->bg_col = desc.bg_col;
 
@@ -1965,8 +2001,7 @@ void _tp_draw_lines(
 // the first `area.w` codepoints
 void _tp_draw_hcenter_text(
     _tp_draw_target* dt, _tp_rect_u32 area,
-    tp_string8 text, tp_u32 y_off
-    //tp_rgb8 fg, tp_rgb8 bg
+    tp_string8 text, tp_u32 y_off, tp_rgb8 fg_col
 ) {
     if (text.size == 0) { return; }
 
@@ -1986,6 +2021,10 @@ void _tp_draw_hcenter_text(
     _tp_utf32_from_utf8(text, out_codes, text_width);
 
     for (tp_u32 i = 0; i < text_width; i++) {
+        tp_u32 index = (area.x + draw_offset + i) +
+            (area.y + y_off) * dt->width;
+
+        dt->fg_cols[index] = fg_col;
     }
 }
 
@@ -1996,7 +2035,7 @@ void _tp_draw_hcenter_text(
 // the first `area.h` codepoints
 void _tp_draw_vcenter_text(
     _tp_draw_target* dt, _tp_rect_u32 area,
-    tp_string8 text, tp_u32 x_off
+    tp_string8 text, tp_u32 x_off, tp_rgb8 fg_col
 ) {
     if (text.size == 0) { return; }
 
@@ -2023,7 +2062,9 @@ void _tp_draw_vcenter_text(
 
         tp_u32 index = (area.x + x_off) +
             (area.y + draw_offset + y_off) * dt->width;
+
         dt->codepoints[index] = codepoint;
+        dt->fg_cols[index] = fg_col;
     }
 }
 
@@ -2064,36 +2105,90 @@ void _tp_draw_axes(
     _tp_rect_u32 graphable = layout->graphable[axes_index];
     _tp_axes_bounds bounds = context->bounds[axes_index];
 
-    _tp_draw_hcenter_text(dt, drawable, axes->title, 0);
+    _tp_draw_hcenter_text(
+        dt, drawable, axes->title, 0, (tp_rgb8){ 255, 255, 255}
+    );
     
     tp_u32 origin = U'┗';
-    tp_u32 x_bar = U'━';
-    tp_u32 y_bar = U'┃';
-    tp_u32 x_tick = U'┯';
-    tp_u32 y_tick = U'┨';
+    tp_u32 xbar = U'━';
+    tp_u32 ybar = U'┃';
+    tp_u32 xtick = U'┯';
+    tp_u32 ytick = U'┨';
 
     if (fig->raster_type == TP_RASTER_ASCII) {
         origin = U'o';
-        x_bar = U'-';
-        y_bar = U'|';
-        x_tick = U'+';
-        y_tick = U'+';
+        xbar = U'-';
+        ybar = U'|';
+        xtick = U'+';
+        ytick = U'+';
     }
 
-    for (tp_u32 ly = 0; ly < graphable.h; ly++) {
-        tp_u32 index = (graphable.x - 1) + (graphable.y + ly) * dt->width;
+    // This is the horizontal position that the y axis is drawn to
+    tp_u32 yaxis_x = graphable.x >= 1 ? graphable.x - 1 : 0;
 
-        dt->codepoints[index] = (ly % 4) == 0 ? y_tick : y_bar;
+    // This is the vertical position that the x axis is drawn to
+    tp_u32 xaxis_y = _TP_MIN(
+        graphable.y + graphable.h,
+        drawable.y + drawable.h - 1
+    );
+
+    // Drawing base axes
+    {
+        for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+            tp_u32 index = yaxis_x + (graphable.y + ly) * dt->width;
+            dt->codepoints[index] = ybar;
+        }
+
+        for (tp_u32 lx = 0; lx < graphable.w + 1; lx++) {
+            tp_u32 index = (yaxis_x + lx) + xaxis_y * dt->width;
+            dt->codepoints[index] = xbar;
+        }
+
+        tp_u32 origin_index = yaxis_x + xaxis_y * dt->width; 
+        dt->codepoints[origin_index] = origin;
     }
 
-    for (tp_u32 lx = 0; lx < graphable.w + 1; lx++) {
-        tp_u32 index = (graphable.x - 1 + lx) + (graphable.y + graphable.h) * dt->width;
+    // Axis transforms (for x and y ticks)
+    _tp_bound_transforms ax_t = _tp_get_bound_transforms(
+        &bounds, graphable.w, graphable.h
+    );
 
-        dt->codepoints[index] = (lx % 4) == 0 ? x_tick : x_bar;
+    // Drawing ticks
+    if ((axes->flags & TP_AXES_NO_XTICKS) != TP_AXES_NO_XTICKS) {
+        tp_u32 num_xticks = axes->num_xticks;
+        tp_f64* xticks = axes->xticks;
+
+        if (num_xticks == 0 || xticks == NULL) {
+            // TODO: compute automatic ticks
+        }
+
+        for (tp_u32 i = 0; i < num_xticks; i++) {
+            tp_i32 x = (tp_i32)(xticks[i] * ax_t.xscale + ax_t.xoff);
+
+            if (x < 0 || x > (tp_i32)graphable.w) { continue; }
+
+            tp_u32 index = (graphable.x + (tp_u32)x) + xaxis_y * dt->width;
+            dt->codepoints[index] = xtick;
+        }
     }
 
-    tp_u32 o_index = (graphable.x - 1) + (graphable.y + graphable.h) * dt->width; 
-    dt->codepoints[o_index] = origin;
+    if ((axes->flags & TP_AXES_NO_YTICKS) != TP_AXES_NO_YTICKS) {
+        tp_u32 num_yticks = axes->num_yticks;
+        tp_f64* yticks = axes->yticks;
+
+        if (num_yticks == 0 || yticks == NULL) {
+            // TODO: compute automatic ticks
+        }
+
+        for (tp_u32 i = 0; i < num_yticks; i++) {
+            tp_i32 y = (tp_i32)(yticks[i] * ax_t.yscale + ax_t.yoff);
+
+            if (y < 0 || y > (tp_i32)graphable.h) { continue; }
+
+            tp_u32 index = yaxis_x + (graphable.y + (tp_u32)y) * dt->width;
+            dt->codepoints[index] = ytick;
+        }
+    }
 
     if (axes->xlabel.size > 0) {
         _tp_rect_u32 xlabel_area = {
@@ -2102,8 +2197,8 @@ void _tp_draw_axes(
         };
 
         _tp_draw_hcenter_text(
-            dt, xlabel_area, axes->xlabel,
-            graphable.y + graphable.h + 2
+            dt, xlabel_area, axes->xlabel, xaxis_y + 2,
+            (tp_rgb8){ 200, 200, 200 }
         );
     }
 
@@ -2113,7 +2208,10 @@ void _tp_draw_axes(
             .y = graphable.y, .h = graphable.h
         };
 
-        _tp_draw_vcenter_text(dt, ylabel_area, axes->ylabel, 0);
+        _tp_draw_vcenter_text(
+            dt, ylabel_area, axes->ylabel, 0,
+            (tp_rgb8){ 200, 200, 200 }
+        );
     }
 
     context->raster_clear(dt, graphable);
@@ -2176,7 +2274,10 @@ void _tp_draw_figure(
     const _tp_fig_layout* layout, const _tp_draw_context* context,
     _tp_rect_u32 area
 ) {
-    _tp_draw_hcenter_text(dt, area, fig->title, fig->margin);
+    _tp_draw_hcenter_text(
+        dt, area, fig->title, fig->margin,
+        (tp_rgb8){ 255, 255, 255 }
+    );
 
     for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
         for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
@@ -2204,7 +2305,13 @@ tp_string8 tp_render_utf8(
     );
 
     _tp_fig_layout layout;
-    _tp_layout_axes(fig, &layout, draw_area);
+    if (!_tp_layout_axes(fig, &layout, draw_area)) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Failed to layout figure, expand figure size to properly render\n"
+        );
+        goto end;
+    }
 
     _tp_draw_context draw_context = { 0 };
     _tp_draw_context_init(fig, &draw_context);
@@ -2230,6 +2337,7 @@ tp_string8 tp_render_utf8(
         );
     }
 
+end:
     _tp_arena_temp_end(temp_arena);
 
     return out;
