@@ -221,6 +221,12 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc);
 // Destroys any resources the figure is using
 void tp_end(tp_figure* fig);
 
+// Clears all data associated with the figure and resets it in accordance with
+// the new descriptor. For repeated figure use, this is going to be much faster
+// than repeated `tp_end` and `tp_begin` calls, because `tp_reset` can reuse
+// the resources from the existing figure
+void tp_reset(tp_figure* fig, const tp_figure_desc* fig_desc);
+
 // Calls made to out of bounds axes will be ignored
 // This should generally only be called once per axis because subsequent calls
 // technically can leak memory
@@ -1063,7 +1069,7 @@ typedef struct tp_figure {
     _tp_axes* axes;
 } tp_figure;
 
-tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
+tp_figure* _tp_fig_init(_tp_arena* arena, const tp_figure_desc* fig_desc) {
     tp_figure_desc desc = fig_desc == NULL ? (tp_figure_desc){ 0 } : *fig_desc;
 
     if (
@@ -1077,8 +1083,6 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
             "and/or `TP_MAX_SUBPLOT_COLS` to a higher number.\n"
         );
     }
-
-    _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
 
     tp_figure* fig = _TP_PUSH_STRUCT(arena, tp_figure);
 
@@ -1146,6 +1150,18 @@ tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
     }
 
     return fig;
+}
+
+tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
+    _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
+    return _tp_fig_init(arena, fig_desc);
+}
+
+void tp_reset(tp_figure* fig, const tp_figure_desc* fig_desc) {
+    _tp_arena* arena = fig->arena;
+    _tp_arena_clear(arena);
+
+    fig = _tp_fig_init(arena, fig_desc);
 }
 
 void tp_end(tp_figure* fig) {
@@ -2203,7 +2219,12 @@ void _tp_draw_axes(
                     unclamped_start_x, (tp_i32)drawable.x
                 );
 
-                if (draw_start_x <= prev_draw_end_x + 1) { continue; }
+                if (
+                    draw_start_x <= prev_draw_end_x + 1 ||
+                    (tp_u32)width > drawable.x + drawable.w - draw_start_x
+                ) {
+                    continue; 
+                }
 
                 tp_u32 draw_start = draw_start_x + (xaxis_y + 1) * dt->width;
                 for (tp_u32 j = 0; j < (tp_u32)width; j++) {

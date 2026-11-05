@@ -12,6 +12,7 @@
         - [X] Override ticks
     - [X] x and y nums
     - [ ] Legends
+    - [X] Figure reset
 
 - [ ] Full MVP (Interactive plots)
     - [ ] Console abstraction
