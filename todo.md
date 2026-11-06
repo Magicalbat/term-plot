@@ -4,11 +4,9 @@
     - [X] Color pass
         - [X] Basic pass
         - [X] Fix braille vs ascii based coloring differences
-    - [ ] Axis labels
-        - [X] Basic drawing
-        - [ ] Colors + overrides
-    - [ ] x and y ticks
-        - [ ] Automatic ticks
+    - [X] Axis labels
+    - [X] x and y ticks
+        - [X] Automatic ticks
         - [X] Override ticks
     - [X] x and y nums
     - [ ] Legends
@@ -29,6 +27,8 @@
         - [ ] Images
     - [ ] Other raster types
         - [ ] Block elements (1x1 and 2x2)
+    - [ ] Axis labels coloring settings
+    - [ ] Improved x and y num drawing (matplotlib style with separate scale + offset)
 
 - [ ] Misc
     - [ ] Make a nicer README.md

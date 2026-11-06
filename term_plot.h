@@ -9,6 +9,21 @@
 #   define _DEFAULT_SOURCE
 #endif
 
+#ifndef TP_MAX_SUBPLOT_ROWS 
+#   define TP_MAX_SUBPLOT_ROWS 8
+#endif
+
+#ifndef TP_MAX_SUBPLOT_COLS 
+#   define TP_MAX_SUBPLOT_COLS 8
+#endif
+
+#define TP_MAX_SUBPLOTS (TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS)
+
+// Number of characters to display for the axis numbers
+#ifndef TP_AXIS_NUM_CHARS
+#   define TP_AXIS_NUM_CHARS 7
+#endif
+
 #include <stdint.h>
 
 typedef int8_t tp_i8;
@@ -56,21 +71,6 @@ typedef enum {
     TP_AXES_NO_XNUMS  = 0b001000,
     TP_AXES_NO_YNUMS  = 0b010000,
 } tp_axes_flags;
-
-#ifndef TP_MAX_SUBPLOT_ROWS 
-#   define TP_MAX_SUBPLOT_ROWS 8
-#endif
-
-#ifndef TP_MAX_SUBPLOT_COLS 
-#   define TP_MAX_SUBPLOT_COLS 8
-#endif
-
-#define TP_MAX_SUBPLOTS (TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS)
-
-// Number of characters to display for the axis numbers
-#ifndef TP_AXIS_NUM_CHARS
-#   define TP_AXIS_NUM_CHARS 7
-#endif
 
 typedef struct {
     // Number of rows of subplots
@@ -180,6 +180,22 @@ typedef struct {
     // bounds, but you can override them with `yticks`. Make sure to also set
     // `num_yticks` if you are overriding this. Will be ignored if NULL
     tp_f64* yticks;
+
+    // Desired number of characters between x ticks, defaults to 12
+    // This is the *desired* gap, but the automatic ticks will prioritize using
+    // round numbers over respecting your desired gap. If you need more 
+    // control, just use your own ticks
+    //
+    // This will be ignored if `xticks` is used
+    tp_u32 desired_xtick_gap;
+
+    // Desired number of characters between y ticks, defaults to 4
+    // This is the *desired* gap, but the automatic ticks will prioritize using
+    // round numbers over respecting your desired gap. If you need more 
+    // control, just use your own ticks
+    // 
+    // This will be ignored if `yticks` is used
+    tp_u32 desired_ytick_gap;
 } tp_axes_desc;
 
 typedef struct {
@@ -1032,6 +1048,9 @@ typedef struct {
     tp_f64* xticks;
     tp_f64* yticks;
 
+    tp_u32 desired_xtick_gap;
+    tp_u32 desired_ytick_gap;
+
     _tp_draw_cmd* first_draw;
     _tp_draw_cmd* last_draw;
 } _tp_axes;
@@ -1197,17 +1216,23 @@ void tp_setup_axes(
     axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
     axes->title = _tp_str8_copy(fig->arena, desc.title);
 
-    if (desc.num_xticks > 0) {
+    if (desc.num_xticks > 0 && desc.xticks != NULL) {
         axes->num_xticks = desc.num_xticks;
         axes->xticks = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, axes->num_xticks);
         memcpy(axes->xticks, desc.xticks, sizeof(tp_f64) * axes->num_xticks);
     }
 
-    if (desc.num_yticks > 0) {
+    if (desc.num_yticks > 0 && desc.yticks != NULL) {
         axes->num_yticks = desc.num_yticks;
         axes->yticks = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, axes->num_yticks);
         memcpy(axes->yticks, desc.yticks, sizeof(tp_f64) * axes->num_yticks);
     }
+
+    axes->desired_xtick_gap = desc.desired_xtick_gap == 0 ?
+        12 : desc.desired_xtick_gap;
+
+    axes->desired_ytick_gap = desc.desired_ytick_gap == 0 ?
+        4 : desc.desired_ytick_gap;
 
     axes->bg_col = desc.bg_col;
 
@@ -2112,6 +2137,57 @@ _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
     return fig_size;
 }
 
+tp_f64* _tp_compute_auto_ticks(
+    _tp_arena* arena, tp_f64 start, tp_f64 end,
+    tp_u32 desired_count, tp_u32* count
+) {
+    if (start == end) { 
+        *count = 0;
+        return NULL;
+    }
+
+    if (end < start) {
+        tp_f64 temp = start;
+        start = end;
+        end = temp;
+    }
+
+    tp_f64 unrounded_step = (end - start) / (tp_f64)(desired_count);
+
+    tp_f64 step_base = pow(10.0, floor(log10(unrounded_step)));
+
+    tp_u32 factors[] = { 1, 2, 5, 10 };
+    tp_f64 step = step_base;
+
+    for (tp_u32 i = 0; i < _TP_ARR_LEN(factors); i++) {
+        tp_f64 s = step_base * factors[i];
+
+        if (_TP_ABS(s - unrounded_step) < _TP_ABS(step - unrounded_step)) {
+            step = s;
+        }
+    }
+
+    tp_f64 tick_base = start - fmod(start, step);
+
+    *count = (tp_u32)ceil((end-tick_base) / step);
+
+    // Sometimes, tick_base will be less than start
+    // This does not really matter, because the tick drawing will skip OOB 
+    // ticks, but I figure I might as well filter it here. 
+    if (tick_base < start) {
+        *count -= 1;
+        tick_base += step;
+    }
+
+    tp_f64* ticks = _TP_PUSH_ARRAY(arena, tp_f64, *count);
+
+    for (tp_u32 i = 0; i < *count; i++) {
+        ticks[i] = tick_base + (tp_f64)i * step;
+    }
+
+    return ticks;
+}
+
 void _tp_draw_axes(
     const tp_figure* fig, _tp_draw_target* dt, 
     tp_u32 axes_row, tp_u32 axes_col,
@@ -2181,13 +2257,19 @@ void _tp_draw_axes(
     // +1 for null terminator
     tp_u8 num_cstr[TP_AXIS_NUM_CHARS + 1] = { 0 };
 
+    // Used to allocate the automatic ticks
+    _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
+
     // Drawing x ticks
     if (has_xticks || has_xnums) {
         tp_u32 num_xticks = axes->num_xticks;
         tp_f64* xticks = axes->xticks;
 
         if (num_xticks == 0 || xticks == NULL) {
-            // TODO: compute automatic ticks
+            xticks = _tp_compute_auto_ticks(
+                temp_arena.arena, bounds.xmin, bounds.xmax,
+                graphable.w / axes->desired_xtick_gap, &num_xticks
+            );
         }
 
         tp_u32 prev_draw_end_x = 0;
@@ -2243,7 +2325,10 @@ void _tp_draw_axes(
         tp_f64* yticks = axes->yticks;
 
         if (num_yticks == 0 || yticks == NULL) {
-            // TODO: compute automatic ticks
+            yticks = _tp_compute_auto_ticks(
+                temp_arena.arena, bounds.ymin, bounds.ymax,
+                graphable.h / axes->desired_ytick_gap, &num_yticks
+            );
         }
 
         tp_u32 draw_num_start = yaxis_x >= drawable.x + TP_AXIS_NUM_CHARS + 1 ?
@@ -2275,6 +2360,8 @@ void _tp_draw_axes(
             }
         }
     }
+
+    _tp_arena_temp_end(temp_arena);
 
     if (axes->xlabel.size > 0) {
         _tp_rect_u32 xlabel_area = {
