@@ -2,6 +2,10 @@
 #ifndef TERM_PLOT_H_INCLUDE
 #define TERM_PLOT_H_INCLUDE
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef TP_MAX_SUBPLOT_ROWS 
 #   define TP_MAX_SUBPLOT_ROWS 8
 #endif
@@ -48,8 +52,6 @@ typedef struct {
 // Creates a `tp_string8` from a literal cstring
 #define TP_STR8(s) (tp_string8){ (tp_u8*)(s), sizeof((s)) - 1 }
 
-tp_string8 tp_str8_from_cstr(tp_u8* cstr);
-
 typedef enum {
     TP_RASTER_BRAILLE = 0,
     TP_RASTER_ASCII,
@@ -65,7 +67,15 @@ typedef enum {
     TP_AXES_NO_YNUMS  = 0b010000,
 } tp_axes_flags;
 
-typedef struct {
+typedef enum {
+    // Unix style
+    TP_NEWLINE_LF = 0,
+
+    // Windows style
+    TP_NEWLINE_CRLF,
+} tp_newline_style;
+
+typedef struct tp_figure_desc {
     // Number of rows of subplots
     // If `subplot_rows` is 0, the figure will default to 1 subplot row
     // Must be less than or equal to `TP_MAX_SUBPLOT_ROWS`
@@ -133,7 +143,7 @@ typedef struct {
     tp_u32 custom_margin;
 } tp_figure_desc;
 
-typedef struct {
+typedef struct tp_axes_desc {
     tp_axes_flags flags;
 
     tp_string8 xlabel;
@@ -189,9 +199,19 @@ typedef struct {
     // 
     // This will be ignored if `yticks` is used
     tp_u32 desired_ytick_gap;
+
+    // Horizontal position of the legend (if enabled) normalized between 0.0 
+    // and 1.0 where 0.0 is fully left and 1.0 is fully right. Out of bounds
+    // values will be clamped
+    tp_f64 legend_pos_x;
+
+    // Vertical position of the legend (if enabled) normalized between 0.0 and
+    // 1.0 where 0.0 is at the top and 1.0 is at the bottom. Out of bounds
+    // values will be clamped
+    tp_f64 legend_pos_y;
 } tp_axes_desc;
 
-typedef struct {
+typedef struct tp_points_desc {
     // Row of the axes to plot to
     tp_u32 axes_row;
     // Column of the axes to plot to
@@ -209,20 +229,14 @@ typedef struct {
     tp_rgb8 col;
 } tp_points_desc;
 
-typedef struct {
+typedef struct tp_allocator {
     void* (*alloc_fn)(tp_u64 size, void* user_data);
     void* user_data;
 } tp_allocator;
 
-typedef enum {
-    // Unix style
-    TP_NEWLINE_LF = 0,
-
-    // Windows style
-    TP_NEWLINE_CRLF,
-} tp_newline_style;
-
 typedef struct tp_figure tp_figure;
+
+tp_string8 tp_str8_from_cstr(tp_u8* cstr);
 
 // Creates a new figure for plotting
 tp_figure* tp_begin(const tp_figure_desc* fig_desc);
@@ -272,6 +286,10 @@ void tp_show(tp_figure* fig);
 // Shows the figure and deletes it when done
 void tp_show_and_end(tp_figure* fig);
 
+#ifdef __cplusplus
+}
+#endif
+
 #endif // TERM_PLOT_H_INCLUDE
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -283,6 +301,11 @@ void tp_show_and_end(tp_figure* fig);
 ////////////////////////////////////////////////////////////////////////////////
 
 #ifdef TERM_PLOT_IMPLEMENTATION
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 
 #include <stddef.h>
 #include <string.h> // memset, memcpy
@@ -632,7 +655,7 @@ static _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
     reserve_size = _TP_ALIGN_UP_POW2(reserve_size, page_size);
     commit_size = _TP_ALIGN_UP_POW2(commit_size, page_size);
 
-    _tp_arena* arena = _tp_mem_reserve(reserve_size);
+    _tp_arena* arena = (_tp_arena*)_tp_mem_reserve(reserve_size);
 
     if (!_tp_mem_commit(arena, commit_size)) {
         arena = NULL;
@@ -1038,13 +1061,13 @@ typedef struct {
     tp_f64* xs;
     tp_f64* ys;
 
-    tp_string8 label;
-
     tp_rgb8 col;
 } _tp_info_pointslike;
 
 typedef struct _tp_draw_cmd {
     struct _tp_draw_cmd* next;
+
+    tp_string8 label;
 
     _tp_draw_cmd_kind kind;
 
@@ -1080,6 +1103,9 @@ typedef struct {
 
     tp_u32 desired_xtick_gap;
     tp_u32 desired_ytick_gap;
+
+    tp_f64 legend_pos_x;
+    tp_f64 legend_pos_y;
 
     _tp_draw_cmd* first_draw;
     _tp_draw_cmd* last_draw;
@@ -1163,6 +1189,14 @@ static tp_figure* _tp_fig_init(
         arena, _tp_axes, fig->subplot_rows * fig->subplot_cols
     );
 
+    // Setting up axes with default stuff
+    // Default setup should not allocate memory
+    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
+        for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
+            tp_setup_axes(fig, row, col, NULL);
+        }
+    }
+
     fig->width_fractions = _TP_PUSH_ARRAY_NZ(arena, tp_f64, fig->subplot_cols);
     fig->height_fractions = _TP_PUSH_ARRAY_NZ(arena, tp_f64, fig->subplot_rows);
 
@@ -1226,6 +1260,7 @@ void tp_setup_axes(
     const tp_axes_desc* axes_desc
 ) {
     if (fig == NULL) { return; }
+
     if (arow >= fig->subplot_rows || acol >= fig->subplot_cols) {
         TP_WARN(
             "[term-plot Warning] "
@@ -1235,7 +1270,7 @@ void tp_setup_axes(
         return;
     }
 
-    tp_axes_desc desc = axes_desc == NULL ? (tp_axes_desc){ 0 } : *axes_desc;
+    tp_axes_desc desc = axes_desc == NULL ? (tp_axes_desc){ } : *axes_desc;
 
     _tp_axes* axes = fig->axes + (arow * fig->subplot_cols + acol);
 
@@ -1247,6 +1282,13 @@ void tp_setup_axes(
     axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
     axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
     axes->title = _tp_str8_copy(fig->arena, desc.title);
+
+    axes->bg_col = desc.bg_col;
+
+    axes->xmin = desc.xmin;
+    axes->xmax = desc.xmax;
+    axes->ymin = desc.ymin;
+    axes->ymax = desc.ymax;
 
     if (desc.num_xticks > 0 && desc.xticks != NULL) {
         axes->num_xticks = desc.num_xticks;
@@ -1266,12 +1308,25 @@ void tp_setup_axes(
     axes->desired_ytick_gap = desc.desired_ytick_gap == 0 ?
         4 : desc.desired_ytick_gap;
 
-    axes->bg_col = desc.bg_col;
+    axes->legend_pos_x = _TP_CLAMP(desc.legend_pos_x, 0.0, 1.0);
+    axes->legend_pos_y = _TP_CLAMP(desc.legend_pos_y, 0.0, 1.0);
+}
 
-    axes->xmin = desc.xmin;
-    axes->xmax = desc.xmax;
-    axes->ymin = desc.ymin;
-    axes->ymax = desc.ymax;
+// This will return `user_col` if it is non-zero, otherwise it will return the
+// next palette color for the axes
+static tp_rgb8 _tp_get_draw_col(_tp_axes* axes, tp_rgb8 user_col) {
+    tp_rgb8 out = user_col;
+
+    if (_tp_rgb8_eq(user_col, (tp_rgb8){ 0 })) {
+        out = _tp_palette[axes->palette_index];
+
+        axes->palette_index = (axes->palette_index + 1) %
+            _TP_ARR_LEN(_tp_palette);
+    } else {
+        out = user_col;
+    }
+
+    return out;
 }
 
 static void _tp_plot_pointslike(
@@ -1303,13 +1358,8 @@ static void _tp_plot_pointslike(
         .xs = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, points_desc->num_points),
         .ys = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, points_desc->num_points),
 
-        .label = _tp_str8_copy(fig->arena, points_desc->label),
+        .col = _tp_get_draw_col(axes, points_desc->col),
     };
-
-    pointslike.col = _tp_rgb8_eq(points_desc->col, (tp_rgb8){ 0 }) ?
-        _tp_palette[axes->palette_index] : points_desc->col;
-
-    axes->palette_index = (axes->palette_index + 1) % _TP_ARR_LEN(_tp_palette);
 
     if (points_desc->xs == NULL) {
         for (tp_u32 i = 0; i < pointslike.num_points; i++) {
@@ -1331,6 +1381,8 @@ static void _tp_plot_pointslike(
 
     *cmd = (_tp_draw_cmd){
         .kind = kind,
+
+        .label = _tp_str8_copy(fig->arena, points_desc->label),
 
         // Note(Ian) this is definitely a bit of a hack, but if all the infos
         // are in the same union, than any `_tp_info_pointslike` in that union
@@ -2196,7 +2248,7 @@ static tp_f64* _tp_compute_auto_ticks(
         end = temp;
     }
 
-    tp_f64 unrounded_step = (end - start) / (tp_f64)(desired_count);
+    tp_f64 unrounded_step = (end - start) / (tp_f64)desired_count;
 
     tp_f64 step_base = pow(10.0, floor(log10(unrounded_step)));
 
@@ -2230,6 +2282,79 @@ static tp_f64* _tp_compute_auto_ticks(
     }
 
     return ticks;
+}
+
+static void _tp_draw_legend(
+    const _tp_axes* axes, _tp_draw_target* dt,
+    _tp_rect_u32 graphable
+) {
+    tp_u32 legend_width = 0;
+    tp_u32 legend_height = 0;
+
+    for (_tp_draw_cmd* cmd = axes->first_draw; cmd != NULL; cmd = cmd->next) {
+        if (cmd->label.size > 0) {
+            tp_u32 cur_width = _tp_str8_width(cmd->label);
+
+            legend_width = _TP_MAX(legend_width, cur_width + 1);
+            legend_height++;
+        }
+    }
+
+    if (legend_width == 0 || legend_height == 0) {
+        return;
+    }
+
+    legend_width = _TP_MIN(legend_width, graphable.w);
+    legend_height = _TP_MIN(legend_height, graphable.h);
+
+    tp_u32 leftover_x = graphable.w - legend_width;
+    tp_u32 leftover_y = graphable.h - legend_height;
+
+    tp_u32 offset_x = (tp_u32)((tp_f64)leftover_x * axes->legend_pos_x);
+    tp_u32 offset_y = (tp_u32)((tp_f64)leftover_y * axes->legend_pos_y);
+
+    tp_u32 y = graphable.y + offset_y;
+    for (
+        _tp_draw_cmd* cmd = axes->first_draw;
+        cmd != NULL && y < graphable.y + graphable.h;
+        cmd = cmd->next
+    ) {
+        if (cmd->label.size == 0) { continue; }
+
+        tp_u32 sym = U' ';
+        tp_rgb8 fg_col = { 255, 255, 255 };
+
+        switch (cmd->kind) {
+            case _TP_DRAW_NONE: break;
+
+            case _TP_DRAW_SCATTER: {
+                sym = U'*';
+                fg_col = cmd->info.scatter.col;
+            } break;
+
+            case _TP_DRAW_LINES: {
+                sym = U'-';
+                fg_col = cmd->info.lines.col;
+            } break;
+        }
+
+        tp_u32 draw_start = (graphable.x + offset_x) + y * dt->width;
+
+        dt->codepoints[draw_start] = sym;
+        dt->fg_cols[draw_start] = fg_col;
+
+        draw_start++;
+
+        tp_u32 width = _tp_utf32_from_utf8(
+            cmd->label, dt->codepoints + draw_start, legend_width - 1
+        );
+
+        for (tp_u32 i = 0; i < width; i++) {
+            dt->fg_cols[draw_start + i] = (tp_rgb8){ 255, 255, 255 };
+        }
+
+        y++;
+    }
 }
 
 static void _tp_draw_axes(
@@ -2381,7 +2506,7 @@ static void _tp_draw_axes(
         for (tp_u32 i = 0; i < num_yticks; i++) {
             tp_i32 y = (tp_i32)(yticks[i] * ax_t.yscale + ax_t.yoff);
 
-            if (y < 0 || y > (tp_i32)graphable.h) { continue; }
+            if (y < 0 || y >= (tp_i32)graphable.h) { continue; }
 
             if (has_yticks) {
                 tp_u32 index = yaxis_x + (graphable.y + (tp_u32)y) * dt->width;
@@ -2484,6 +2609,10 @@ static void _tp_draw_axes(
             memset(dt->col_bitmask, 0, (graphable.w * graphable.h + 7) / 8);
         }
     }
+
+    if ((axes->flags & TP_AXES_LEGEND) == TP_AXES_LEGEND) {
+        _tp_draw_legend(axes, dt, graphable);
+    }
 }
 
 static void _tp_draw_figure(
@@ -2546,9 +2675,11 @@ tp_string8 tp_render_utf8(
     );
 
     if (allocator == NULL) {
-        out.str = malloc(rendered_size);
+        out.str = (tp_u8*)malloc(rendered_size);
     } else {
-        out.str = allocator->alloc_fn(rendered_size, allocator->user_data);
+        out.str = (tp_u8*)allocator->alloc_fn(
+            rendered_size, allocator->user_data
+        );
     }
 
     if (out.str != NULL) {
@@ -2617,6 +2748,10 @@ void tp_show_and_end(tp_figure* fig) {
     tp_show(fig);
     tp_end(fig);
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // TERM_PLOT_IMPLEMENTATION
 

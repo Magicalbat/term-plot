@@ -9,7 +9,7 @@
         - [X] Automatic ticks
         - [X] Override ticks
     - [X] x and y nums
-    - [ ] Legends
+    - [X] Legends
     - [X] Figure reset
     - [X] Static show + Console write abstraction
     - [ ] Make a nicer README.md

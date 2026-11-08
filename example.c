@@ -50,19 +50,25 @@ int main(void) {
             .num_points = N,
             .xs = x0s,
             .ys = y0s,
+
+            .col = { 0, 255, 0 },
+
+            .label = TP_STR8("sin"),
         });
 
         for (u32 i = 0; i < N; i++) {
             y0s[i] = cos(x0s[i]);
         }
 
-        tp_plot_lines(fig, &(tp_points_desc){
+        tp_plot_scatter(fig, &(tp_points_desc){
             .axes_row = 0,
             .axes_col = 0,
 
             .num_points = N,
             .xs = x0s,
             .ys = y0s,
+
+            .label = TP_STR8("cos"),
         });
     }
 
@@ -71,11 +77,15 @@ int main(void) {
         tp_f64 off = 0;
         tp_f64 scale = 3.2e-7;
 
+        char label[255];
+
         for (u32 i = 0; i < 12; i++) {
             for (u32 j = 0; j < N; j++) {
                 x0s[j] = (tp_f64)((i * (N + 4)) + j) * scale + off;
                 y0s[j] = (tp_f64)(j);
             }
+
+            snprintf(label, sizeof(label), "line %d", i);
 
             tp_plot_lines(fig, &(tp_points_desc){
                 .axes_row = 1,
@@ -84,6 +94,8 @@ int main(void) {
                 .num_points = N,
                 .xs = x0s,
                 .ys = y0s,
+
+                .label = tp_str8_from_cstr((tp_u8*)label),
             });
         }
     }
@@ -100,7 +112,10 @@ int main(void) {
     tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
         .title = TP_STR8("Here is a subplot"),
 
-        .flags = 0,
+        .flags = TP_AXES_LEGEND,
+
+        .legend_pos_x = 0.0,
+        .legend_pos_y = 1.0,
 
         .xlabel = TP_STR8("Time"),
         .ylabel = TP_STR8("Ians"),
@@ -114,6 +129,8 @@ int main(void) {
 
     tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
         .title = TP_STR8("Another one"),
+
+        .flags = TP_AXES_LEGEND,
 
         .xlabel = TP_STR8("this is the x axis"),
         .ylabel = TP_STR8("Colors"),
