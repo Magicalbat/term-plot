@@ -106,13 +106,11 @@ int main(void) {
         .xlabel = TP_STR8("Time"),
         .ylabel = TP_STR8("Ians"),
 
-        //.num_xticks = ARR_LEN(xticks),
-        //.xticks = xticks,
-        //.num_yticks = ARR_LEN(yticks),
-        //.yticks = yticks,
+        .num_xticks = ARR_LEN(xticks),
+        .xticks = xticks,
 
-        .desired_ytick_gap = 1,
-        .desired_xtick_gap = 20,
+        .num_yticks = ARR_LEN(yticks),
+        .yticks = yticks,
     });
 
     tp_setup_axes(fig, 1, 0, &(tp_axes_desc){

@@ -11,9 +11,13 @@
     - [X] x and y nums
     - [ ] Legends
     - [X] Figure reset
+    - [ ] Static show + Console write abstraction
+    - [ ] Make a nicer README.md
+    - [ ] Add large doc comment at the top of the header
+    - [X] Make all the internal stuff static (oops)
 
 - [ ] Full MVP (Interactive plots)
-    - [ ] Console abstraction
+    - [ ] Console raw mode + read abstraction
     - [ ] Basic interface + focus logic
     - [ ] Panning
     - [ ] Zooming
@@ -29,7 +33,3 @@
         - [ ] Block elements (1x1 and 2x2)
     - [ ] Axis labels coloring settings
     - [ ] Improved x and y num drawing (matplotlib style with separate scale + offset)
-
-- [ ] Misc
-    - [ ] Make a nicer README.md
-    - [ ] Add large doc comment at the top of the header

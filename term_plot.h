@@ -272,15 +272,12 @@ tp_string8 tp_render_utf8(
     const tp_allocator* allocator
 );
 
-// Prints out the current graph statically to standard out
-// If `interactive` is true, the figure will take control of the terminal 
-// window, and there will be keyboard and mouse controls to interact with the 
-// plots
-void tp_show(tp_figure* fig, tp_b8 interactive);
+// Prints out the current graph to standard out
+void tp_show(tp_figure* fig);
 
 // This is the same as `tp_show` followed by `tp_end`
 // Shows the figure and deletes it when done
-void tp_show_and_end(tp_figure* fig, tp_b8 interactive);
+void tp_show_and_end(tp_figure* fig);
 
 #endif // TERM_PLOT_H_INCLUDE
 
@@ -350,7 +347,7 @@ typedef struct {
     tp_u32 start, size;
 } _tp_range_u32;
 
-tp_u32 _tp_clz_u64(tp_u64 n) {
+static tp_u32 _tp_clz_u64(tp_u64 n) {
     if (n == 0) { return 64; }
 
 #if defined(__clang__) || defined (__GNUC__)
@@ -387,13 +384,13 @@ tp_u32 _tp_clz_u64(tp_u64 n) {
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
-void* _tp_mem_reserve(tp_u64 size);
-tp_b32 _tp_mem_commit(void* mem, tp_u64 size);
-tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
-tp_b32 _tp_mem_release(void* mem, tp_u64 size);
-tp_u32 _tp_page_size(void);
+static void* _tp_mem_reserve(tp_u64 size);
+static tp_b32 _tp_mem_commit(void* mem, tp_u64 size);
+static tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
+static tp_b32 _tp_mem_release(void* mem, tp_u64 size);
+static tp_u32 _tp_page_size(void);
 
-_tp_dim_u32 _tp_get_termsize(void);
+static _tp_dim_u32 _tp_get_termsize(void);
 
 static _tp_dim_u32 _tp_def_termsize = { .width = 80, .height = 24 };
 
@@ -596,7 +593,7 @@ typedef struct {
 #define _TP_PUSH_ARRAY(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (tp_u64)(n), _TP_FALSE)
 #define _TP_PUSH_ARRAY_NZ(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (tp_u64)(n), _TP_TRUE)
 
-_tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
+static _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
     tp_u32 page_size = _tp_page_size();
 
     reserve_size = _TP_ALIGN_UP_POW2(reserve_size, page_size);
@@ -626,7 +623,7 @@ _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size) {
     return arena;
 }
 
-void _tp_arena_destroy(_tp_arena* arena) {
+static void _tp_arena_destroy(_tp_arena* arena) {
     _tp_arena* current = arena->current;
 
     while (current != NULL) {
@@ -637,11 +634,11 @@ void _tp_arena_destroy(_tp_arena* arena) {
     }
 }
 
-tp_u64 _tp_arena_get_pos(_tp_arena* arena) {
+static tp_u64 _tp_arena_get_pos(_tp_arena* arena) {
     return arena->current->base_pos + arena->current->pos;
 }
 
-void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
+static void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
     void* out = NULL;
 
     _tp_arena* current = arena->current;
@@ -706,7 +703,7 @@ void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
     return out;
 }
 
-void _tp_arena_pop(_tp_arena* arena, tp_u64 size) {
+static void _tp_arena_pop(_tp_arena* arena, tp_u64 size) {
     size = _TP_MIN(size, _tp_arena_get_pos(arena));
 
     _tp_arena* current = arena->current;
@@ -725,7 +722,7 @@ void _tp_arena_pop(_tp_arena* arena, tp_u64 size) {
     current->pos -= size;
 }
 
-void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos) {
+static void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos) {
     tp_u64 cur_pos = _tp_arena_get_pos(arena);
     
     pos = _TP_MIN(pos, cur_pos);
@@ -733,18 +730,18 @@ void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos) {
     _tp_arena_pop(arena, cur_pos - pos);
 }
 
-void _tp_arena_clear(_tp_arena* arena) {
+static void _tp_arena_clear(_tp_arena* arena) {
     _tp_arena_pop_to(arena, _TP_ARENA_HEADER_SIZE);
 }
 
-_tp_arena_temp _tp_arena_temp_begin(_tp_arena* arena) {
+static _tp_arena_temp _tp_arena_temp_begin(_tp_arena* arena) {
     return (_tp_arena_temp) {
         .arena = arena,
         .start_pos = _tp_arena_get_pos(arena)
     };
 }
 
-void _tp_arena_temp_end(_tp_arena_temp temp) {
+static void _tp_arena_temp_end(_tp_arena_temp temp) {
     _tp_arena_pop_to(temp.arena, temp.start_pos);
 }
 
@@ -770,7 +767,7 @@ static const tp_u8 _tp_utf8_final_shifts[] = {
 
 // Returns the number of unicode codepoints in the utf8 string
 // Will parse so long as the utf8 stream is valid
-tp_u32 _tp_utf32_from_utf8_size(tp_string8 str) {
+static tp_u32 _tp_utf32_from_utf8_size(tp_string8 str) {
     tp_u32 count = 0;
     tp_u32 cur_len = 1;
 
@@ -786,7 +783,7 @@ tp_u32 _tp_utf32_from_utf8_size(tp_string8 str) {
 // Stops writing if it encounters an invalid portion of the utf8 stream
 //
 // Returns the number of codepoints written
-tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
+static tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
     tp_u32 out_pos = 0;
     tp_u32 cur_len = 0;
 
@@ -826,7 +823,7 @@ tp_u32 _tp_utf32_from_utf8(tp_string8 str, tp_u32* out, tp_u32 cap) {
 //
 // This function assumes that the input is a valid utf32 stream, which should 
 // be fine because we only call this internally
-tp_u64 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
+static tp_u64 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
     tp_u64 size = 0;
 
     for (tp_u32 i = 0; i < len; i++) {
@@ -843,7 +840,7 @@ tp_u64 _tp_utf8_from_utf32_size(tp_u32* str, tp_u32 len) {
 //
 // This function assumes that the input is a valid utf32 stream, which should 
 // be fine because we only call this internally
-tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
+static tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
     tp_u32 size = 0;
 
     if (codepoint <= 0x7f) {
@@ -873,7 +870,7 @@ tp_u32 _tp_utf8_encode(tp_u32 codepoint, tp_u8* out) {
     return size;
 }
 
-tp_u32 _tp_utf8_decode(tp_u8* str, tp_u64 cap, tp_u32* out) {
+static tp_u32 _tp_utf8_decode(tp_u8* str, tp_u64 cap, tp_u32* out) {
     tp_u8 first_byte = str[0];
     tp_u32 len = _tp_utf8_lengths[first_byte >> 3];
 
@@ -916,7 +913,7 @@ tp_string8 tp_str8_from_cstr(tp_u8* cstr) {
     };
 }
 
-tp_string8 _tp_str8_copy(_tp_arena* arena, tp_string8 str) {
+static tp_string8 _tp_str8_copy(_tp_arena* arena, tp_string8 str) {
     if (str.size == 0) {
         return (tp_string8){ 0 };
     }
@@ -935,7 +932,7 @@ tp_string8 _tp_str8_copy(_tp_arena* arena, tp_string8 str) {
 // number of codepoints is the width of a string of text, but I am not about to
 // put half of HarfBuzz in the silly terminal plotting library to accurately 
 // center text
-tp_u32 _tp_str8_width(tp_string8 str) {
+static tp_u32 _tp_str8_width(tp_string8 str) {
     return _tp_utf32_from_utf8_size(str);
 }
 
@@ -964,13 +961,13 @@ static const tp_rgb8 _tp_palette[] = {
     { 0xff, 0xf1, 0xe8 },
 };
 
-tp_b32 _tp_rgb8_eq(tp_rgb8 a, tp_rgb8 b) {
+static tp_b32 _tp_rgb8_eq(tp_rgb8 a, tp_rgb8 b) {
     return a.r == b.r && a.g == b.g && a.b == b.b;
 }
 
 // Writes the ANSI escape sequence to encode a color change to `col` in `out`
 // `out` must have `_TP_ANSI_COL_SIZE` bytes
-void _tp_ansi_from_rgb8(tp_rgb8 col, tp_b32 fg, tp_u8* out) {
+static void _tp_ansi_from_rgb8(tp_rgb8 col, tp_b32 fg, tp_u8* out) {
     if (fg) {
         memcpy(out, _TP_ANSI_FG_TEMP, _TP_ANSI_COL_SIZE);
     } else {
@@ -1088,7 +1085,9 @@ typedef struct tp_figure {
     _tp_axes* axes;
 } tp_figure;
 
-tp_figure* _tp_fig_init(_tp_arena* arena, const tp_figure_desc* fig_desc) {
+static tp_figure* _tp_fig_init(
+    _tp_arena* arena, const tp_figure_desc* fig_desc
+) {
     tp_figure_desc desc = fig_desc == NULL ? (tp_figure_desc){ 0 } : *fig_desc;
 
     if (
@@ -1242,7 +1241,7 @@ void tp_setup_axes(
     axes->ymax = desc.ymax;
 }
 
-void _tp_plot_pointslike(
+static void _tp_plot_pointslike(
     tp_figure* fig, _tp_draw_cmd_kind kind,
     const tp_points_desc* points_desc
 ) {
@@ -1346,7 +1345,7 @@ typedef struct {
 // When doing layout, some parts of the figure are allowed to grow and other 
 // are fixed. This function calculates the fixed dimensions for a given set of
 // axes in the figure
-_tp_fixed_size _tp_axes_fixed_size(
+static _tp_fixed_size _tp_axes_fixed_size(
     tp_figure* fig,
     tp_u32 subplot_row, tp_u32 subplot_col
 ) {
@@ -1385,7 +1384,7 @@ _tp_fixed_size _tp_axes_fixed_size(
 // size
 // 
 // Returns true if there is enough space
-tp_b32 _tp_layout_axes(
+static tp_b32 _tp_layout_axes(
     tp_figure* fig, _tp_fig_layout* layout, _tp_rect_u32 draw_area
 ) {
     tp_u32 fixed_x = 2 * fig->margin + (fig->subplot_cols - 1) * fig->padding;
@@ -1535,7 +1534,9 @@ typedef struct {
     tp_u64* col_bitmask;
 } _tp_draw_target;
 
-_tp_draw_target _tp_draw_target_create(_tp_arena* arena, _tp_dim_u32 dim) {
+static _tp_draw_target _tp_draw_target_create(
+    _tp_arena* arena, _tp_dim_u32 dim
+) {
     tp_u32 size = dim.width * dim.height;
 
     _tp_draw_target out = {
@@ -1564,7 +1565,7 @@ _tp_draw_target _tp_draw_target_create(_tp_arena* arena, _tp_dim_u32 dim) {
 }
 
 // Returns the number of bytes it would take to encode the draw target
-tp_u64 _tp_draw_target_encode_size(
+static tp_u64 _tp_draw_target_encode_size(
     _tp_draw_target* dt,
     tp_newline_style newline_style,
     tp_b32 with_color
@@ -1608,7 +1609,7 @@ tp_u64 _tp_draw_target_encode_size(
 }
 
 // Encodes the draw_target to a utf8 code with ansi codes
-void _tp_draw_target_encode(
+static void _tp_draw_target_encode(
     _tp_draw_target* dt,
     tp_newline_style newline_style,
     tp_b32 with_color, tp_u8* out
@@ -1677,7 +1678,7 @@ void _tp_draw_target_encode(
 // inside the draw target. 
 //
 // Only looks at the first `area.w * area.h` bits within the `col_bitmask`
-void _tp_draw_target_color_fg(
+static void _tp_draw_target_color_fg(
     _tp_draw_target* dt, tp_rgb8 fg, _tp_rect_u32 area
 ) {
     tp_u32 num = (area.w * area.h + 63) / 64;
@@ -1713,7 +1714,9 @@ void _tp_draw_target_color_fg(
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
-void _tp_braille_draw_clear(_tp_draw_target* dt, _tp_rect_u32 graphable) {
+static void _tp_braille_draw_clear(
+    _tp_draw_target* dt, _tp_rect_u32 graphable
+) {
     for (tp_u32 ly = 0; ly < graphable.h; ly++) {
         for (tp_u32 lx = 0; lx < graphable.w; lx++) {
             tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
@@ -1723,7 +1726,7 @@ void _tp_braille_draw_clear(_tp_draw_target* dt, _tp_rect_u32 graphable) {
     }
 }
 
-void _tp_braille_draw_point(
+static void _tp_braille_draw_point(
     _tp_draw_target* dt, _tp_rect_u32 graphable,
     tp_i32 dot_x, tp_i32 dot_y
 ) {
@@ -1754,7 +1757,7 @@ void _tp_braille_draw_point(
     dt->col_bitmask[bit_index / 64] |= (tp_u64)1 << (bit_index % 64);
 }
 
-void _tp_ascii_draw_clear(_tp_draw_target* dt, _tp_rect_u32 graphable) {
+static void _tp_ascii_draw_clear(_tp_draw_target* dt, _tp_rect_u32 graphable) {
     for (tp_u32 ly = 0; ly < graphable.h; ly++) {
         for (tp_u32 lx = 0; lx < graphable.w; lx++) {
             tp_u32 index = (graphable.x + lx) + (graphable.y + ly) * dt->width;
@@ -1764,7 +1767,7 @@ void _tp_ascii_draw_clear(_tp_draw_target* dt, _tp_rect_u32 graphable) {
     }
 }
 
-void _tp_ascii_draw_point(
+static void _tp_ascii_draw_point(
     _tp_draw_target* dt, _tp_rect_u32 graphable,
     tp_i32 x, tp_i32 y
 ) {
@@ -1822,7 +1825,9 @@ typedef struct {
     _tp_axes_bounds bounds[TP_MAX_SUBPLOTS];
 } _tp_draw_context;
 
-_tp_axes_bounds _tp_pointslike_bounds(const _tp_info_pointslike* pointslike) {
+static _tp_axes_bounds _tp_pointslike_bounds(
+    const _tp_info_pointslike* pointslike
+) {
     _tp_axes_bounds cur = _tp_def_axes_bounds;
 
     for (tp_u32 i = 0; i < pointslike->num_points; i++) {
@@ -1847,7 +1852,9 @@ _tp_axes_bounds _tp_pointslike_bounds(const _tp_info_pointslike* pointslike) {
     return cur;
 }
 
-void _tp_expand_bounds(_tp_axes_bounds* bounds, const _tp_draw_cmd* cmd) {
+static void _tp_expand_bounds(
+    _tp_axes_bounds* bounds, const _tp_draw_cmd* cmd
+) {
     _tp_axes_bounds cur = _tp_def_axes_bounds;
 
     switch (cmd->kind) {
@@ -1870,7 +1877,9 @@ void _tp_expand_bounds(_tp_axes_bounds* bounds, const _tp_draw_cmd* cmd) {
 
 // Computes the bounds for each subplot in the figure and write the results to 
 // `draw_context`
-void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
+static void _tp_compute_bounds(
+    tp_figure* fig, _tp_draw_context* draw_context
+) {
     for (tp_u32 i = 0; i < fig->subplot_rows * fig->subplot_cols; i++) {
         _tp_axes* axes = fig->axes + i;
 
@@ -1912,7 +1921,9 @@ void _tp_compute_bounds(tp_figure* fig, _tp_draw_context* draw_context) {
     }
 }
 
-void _tp_draw_context_init(tp_figure* fig, _tp_draw_context* draw_context) {
+static void _tp_draw_context_init(
+    tp_figure* fig, _tp_draw_context* draw_context
+) {
     memset(draw_context, 0, sizeof(_tp_draw_context));
 
     switch (fig->raster_type) {
@@ -1957,7 +1968,7 @@ typedef struct {
 // transform a given (x, y) from graph space to dot space, where dot space is
 // +y down and generally a direct factor of the character dimensions of the 
 // draw area
-_tp_bound_transforms _tp_get_bound_transforms(
+static _tp_bound_transforms _tp_get_bound_transforms(
     const _tp_axes_bounds* bounds,
     tp_f64 xdots, tp_f64 ydots
 ) {
@@ -1975,7 +1986,7 @@ _tp_bound_transforms _tp_get_bound_transforms(
     };
 }
 
-void _tp_draw_scatter(
+static void _tp_draw_scatter(
     _tp_draw_target* dt,
     const _tp_draw_context* context,
     const _tp_info_pointslike* pointslike,
@@ -1990,7 +2001,7 @@ void _tp_draw_scatter(
     }
 }
 
-void _tp_draw_lines(
+static void _tp_draw_lines(
     _tp_draw_target* dt,
     const _tp_draw_context* context,
     const _tp_info_pointslike* pointslike,
@@ -2044,7 +2055,7 @@ void _tp_draw_lines(
 //
 // If there is not enough space to fit the text, it will be clipped and show 
 // the first `area.w` codepoints
-void _tp_draw_hcenter_text(
+static void _tp_draw_hcenter_text(
     _tp_draw_target* dt, _tp_rect_u32 area,
     tp_string8 text, tp_u32 y_off, tp_rgb8 fg_col
 ) {
@@ -2078,7 +2089,7 @@ void _tp_draw_hcenter_text(
 //
 // If there is not enough space to fit the text, it will be clipped and show 
 // the first `area.h` codepoints
-void _tp_draw_vcenter_text(
+static void _tp_draw_vcenter_text(
     _tp_draw_target* dt, _tp_rect_u32 area,
     tp_string8 text, tp_u32 x_off, tp_rgb8 fg_col
 ) {
@@ -2113,7 +2124,7 @@ void _tp_draw_vcenter_text(
     }
 }
 
-_tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
+static _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
     _tp_dim_u32 fig_size = { fig->char_width, fig->char_height };
     _tp_dim_u32 term_size = _tp_get_termsize();
 
@@ -2137,7 +2148,7 @@ _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
     return fig_size;
 }
 
-tp_f64* _tp_compute_auto_ticks(
+static tp_f64* _tp_compute_auto_ticks(
     _tp_arena* arena, tp_f64 start, tp_f64 end,
     tp_u32 desired_count, tp_u32* count
 ) {
@@ -2188,7 +2199,7 @@ tp_f64* _tp_compute_auto_ticks(
     return ticks;
 }
 
-void _tp_draw_axes(
+static void _tp_draw_axes(
     const tp_figure* fig, _tp_draw_target* dt, 
     tp_u32 axes_row, tp_u32 axes_col,
     const _tp_fig_layout* layout,
@@ -2442,7 +2453,7 @@ void _tp_draw_axes(
     }
 }
 
-void _tp_draw_figure(
+static void _tp_draw_figure(
     const tp_figure* fig, _tp_draw_target* dt,
     const _tp_fig_layout* layout, const _tp_draw_context* context,
     _tp_rect_u32 area
