@@ -11,7 +11,7 @@
     - [X] x and y nums
     - [ ] Legends
     - [X] Figure reset
-    - [ ] Static show + Console write abstraction
+    - [X] Static show + Console write abstraction
     - [ ] Make a nicer README.md
     - [ ] Add large doc comment at the top of the header
     - [X] Make all the internal stuff static (oops)

@@ -2,13 +2,6 @@
 #ifndef TERM_PLOT_H_INCLUDE
 #define TERM_PLOT_H_INCLUDE
 
-// Note(Ian) I am not super familiar with all the C stuff for linux, so let me
-// know if there is a better way to do this. I think this is required for 
-// `madvise`
-#if defined(__linux__) && !defined(_DEFAULT_SOURCE)
-#   define _DEFAULT_SOURCE
-#endif
-
 #ifndef TP_MAX_SUBPLOT_ROWS 
 #   define TP_MAX_SUBPLOT_ROWS 8
 #endif
@@ -295,7 +288,16 @@ void tp_show_and_end(tp_figure* fig);
 #include <string.h> // memset, memcpy
 #include <math.h>
 
-#if !defined(TP_FATAL_ERROR) || !defined(TP_WARN) || !defined(TP_SNPRINTF)
+#if defined(_WIN32)
+#   define _TP_PLAT_WIN32
+#elif defined(__unix__)
+#   define _TP_PLAT_UNIX
+#else
+#   define _TP_PLAT_UNKNOWN
+#endif
+
+#if !defined(TP_FATAL_ERROR) || !defined(TP_WARN) || !defined(TP_SNPRINTF) || \
+    defined(_TP_PLAT_UNKNOWN)
 #   include <stdio.h>
 #endif
 
@@ -386,7 +388,6 @@ static tp_u32 _tp_clz_u64(tp_u64 n) {
 
 static void* _tp_mem_reserve(tp_u64 size);
 static tp_b32 _tp_mem_commit(void* mem, tp_u64 size);
-static tp_b32 _tp_mem_decommit(void* mem, tp_u64 size);
 static tp_b32 _tp_mem_release(void* mem, tp_u64 size);
 static tp_u32 _tp_page_size(void);
 
@@ -394,7 +395,10 @@ static _tp_dim_u32 _tp_get_termsize(void);
 
 static _tp_dim_u32 _tp_def_termsize = { .width = 80, .height = 24 };
 
-#if defined(_WIN32)
+// Writes the string to stdout
+static void _tp_term_write(tp_string8 str);
+
+#if defined(_TP_PLAT_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #   define WIN32_LEAN_AND_MEAN
@@ -413,10 +417,6 @@ void* _tp_mem_reserve(tp_u64 size) {
 tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
     void* ret = VirtualAlloc(mem, size, MEM_COMMIT, PAGE_READWRITE);
     return ret != NULL;
-}
-
-tp_b32 _tp_mem_decommit(void* mem, tp_u64 size) {
-    return VirtualFree(mem, size, MEM_DECOMMIT);
 }
 
 tp_b32 _tp_mem_release(void* mem, tp_u64 size) {
@@ -455,7 +455,25 @@ _tp_dim_u32 _tp_get_termsize(void) {
     };
 }
 
-#elif defined(__unix__)
+void _tp_term_write(tp_string8 str) {
+    HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    tp_u64 total_written = 0;
+
+    while (total_written < str.size) {
+        DWORD written = 0;
+
+        tp_u32 to_write = (str.size - total_written) & ~((tp_u32)0);
+        WriteFile(
+            stdout_handle, str.str + total_written,
+            to_write, &written, NULL
+        );
+
+        total_written += written;
+    }
+}
+
+#elif defined(_TP_PLAT_UNIX)
 
 #include <unistd.h>
 #include <locale.h>
@@ -484,16 +502,6 @@ void* _tp_mem_reserve(tp_u64 size) {
 
 tp_b32 _tp_mem_commit(void* ptr, tp_u64 size) {
     tp_i32 ret = mprotect(ptr, size, PROT_READ | PROT_WRITE);
-    return ret == 0;
-}
-
-tp_b32 _tp_mem_decommit(void* ptr, tp_u64 size) {
-    tp_i32 ret = mprotect(ptr, size, PROT_NONE);
-
-    if (ret != 0) return _TP_FALSE;
-
-    ret = madvise(ptr, size, MADV_DONTNEED);
-
     return ret == 0;
 }
 
@@ -526,9 +534,26 @@ _tp_dim_u32 _tp_get_termsize(void) {
     return _tp_def_termsize;
 }
 
-#else
+void _tp_term_write(tp_string8 str) {
+    write(STDOUT_FILENO, str.str, str.size);
+}
+
+#elif defined(_TP_PLAT_UNKNOWN)
 
 #include <stdlib.h>
+#include <locale.h>
+
+void tp_enable_utf8_output(void) {
+    char* res = setlocale(LC_ALL, "C.UTF-8");
+
+    if (res == NULL) {
+        res = setlocale(LC_ALL, "en_US.UTF-8");
+    }
+
+    if (res == NULL) {
+        res = setlocale(LC_ALL, "");
+    }
+}
 
 void* _tp_mem_reserve(tp_u64 size) {
     return malloc(size);
@@ -560,7 +585,15 @@ tp_u32 _tp_page_size(void) {
     return _TP_KiB(4);
 }
 
-#endif
+_tp_dim_u32 _tp_get_termsize(void) {
+    return _tp_def_termsize;
+}
+
+void _tp_term_write(tp_string8 str) {
+    fwrite(str.str, 1, str.size, stdout);
+}
+
+#endif // Platform dependent
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
@@ -2470,6 +2503,12 @@ static void _tp_draw_figure(
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// 
+// User facing drawing functions
+// 
+////////////////////////////////////////////////////////////////////////////////
+
 tp_string8 tp_render_utf8(
     tp_figure* fig, tp_newline_style newline_style,
     const tp_allocator* allocator
@@ -2525,6 +2564,58 @@ end:
     _tp_arena_temp_end(temp_arena);
 
     return out;
+}
+
+void tp_show(tp_figure* fig) {
+    _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
+
+    _tp_dim_u32 fig_size = _tp_size_figure(fig, _TP_FALSE);
+    _tp_rect_u32 draw_area = {
+        .w = fig_size.width,
+        .h = fig_size.height,
+    };
+
+    _tp_draw_target draw_target = _tp_draw_target_create(
+        temp_arena.arena, fig_size
+    );
+
+    _tp_fig_layout layout;
+    if (!_tp_layout_axes(fig, &layout, draw_area)) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Failed to layout figure, expand figure size to properly render\n"
+        );
+        goto end;
+    }
+
+    _tp_draw_context draw_context = { 0 };
+    _tp_draw_context_init(fig, &draw_context);
+
+    _tp_draw_figure(fig, &draw_target, &layout, &draw_context, draw_area);
+
+    tp_u64 rendered_size = _tp_draw_target_encode_size(
+        &draw_target, TP_NEWLINE_LF, !fig->monochrome
+    );
+
+    tp_string8 rendered = {
+        .size = rendered_size,
+        .str = _TP_PUSH_ARRAY_NZ(temp_arena.arena, tp_u8, rendered_size),
+    };
+
+    _tp_draw_target_encode(
+        &draw_target, TP_NEWLINE_LF, !fig->monochrome, rendered.str
+    );
+
+    tp_enable_utf8_output();
+    _tp_term_write(rendered);
+
+end:
+    _tp_arena_temp_end(temp_arena);
+}
+
+void tp_show_and_end(tp_figure* fig) {
+    tp_show(fig);
+    tp_end(fig);
 }
 
 #endif // TERM_PLOT_IMPLEMENTATION

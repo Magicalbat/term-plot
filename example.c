@@ -2,7 +2,6 @@
 #define TERM_PLOT_IMPLEMENTATION
 #include "term_plot.h"
 
-#include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -120,12 +119,7 @@ int main(void) {
         .ylabel = TP_STR8("Colors"),
     });
 
-    tp_string8 rendered = tp_render_utf8(fig, TP_NEWLINE_LF, NULL);
-
-    tp_enable_utf8_output();
-    printf("%.*s", (int)rendered.size, rendered.str);
-    
-    tp_end(fig);
+    tp_show_and_end(fig);
 
     return 0;
 }
