@@ -66,7 +66,7 @@ produces this graph:
 
 ## How to use
 
-`term_plot.h` primarily deals with figures (of types `tp_figure*`). One figure 
+`term_plot.h` primarily deals with figures (of type `tp_figure*`). One figure 
 contains a grid of subplots, where each subplot has a set of axes. Create 
 figures with `tp_begin(...)`, reset figures with `tp_reset(...)`, and destroy 
 figures with `tp_end(...)` or `tp_show_and_end(...)`. Each set of axes can be 
@@ -76,8 +76,8 @@ the output, simply call `tp_show(...)` or `tp_show_and_end(...)`.
 
 You can also get a UTF-8 stream for the figure by calling `tp_render_utf8(...)`. 
 It is worth noting however that 1) non-monochrome figures will have ANSI escape 
-codes included in this stream (set monochrome to true in your `tp_figure_desc` 
-to avoid this), and 2 directly printing this output might not work in some 
+codes included in this stream (set `monochrome` to true in your `tp_figure_desc` 
+to avoid this), and 2) directly printing this output might not work in some 
 terminals without first calling `tp_enable_utf8_output()`.
 
 ## How to build
