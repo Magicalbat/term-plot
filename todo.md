@@ -12,7 +12,7 @@
     - [X] Legends
     - [X] Figure reset
     - [X] Static show + Console write abstraction
-    - [ ] Make a nicer README.md
+    - [X] Make a nicer README.md
     - [ ] Add large doc comment at the top of the header
     - [X] Make all the internal stuff static (oops)
 

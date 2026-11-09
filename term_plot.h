@@ -212,11 +212,6 @@ typedef struct tp_axes_desc {
 } tp_axes_desc;
 
 typedef struct tp_points_desc {
-    // Row of the axes to plot to
-    tp_u32 axes_row;
-    // Column of the axes to plot to
-    tp_u32 axes_col;
-    
     tp_u32 num_points;
 
     // `xs` can be NULL. If it is, the plot will use 0...`num_points`-1
@@ -254,12 +249,19 @@ void tp_reset(tp_figure* fig, const tp_figure_desc* fig_desc);
 // This should generally only be called once per axis because subsequent calls
 // technically can leak memory
 void tp_setup_axes(
-    tp_figure* fig, tp_u32 arow, tp_u32 acol,
+    tp_figure* fig, tp_u32 subplot_row, tp_u32 subplot_col,
     const tp_axes_desc* axes_desc
 );
 
-void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points);
-void tp_plot_lines(tp_figure* fig, const tp_points_desc* points);
+void tp_plot_scatter(
+    tp_figure* fig, tp_u32 subplot_row, tp_u32 subplot_col, 
+    const tp_points_desc* points
+);
+
+void tp_plot_lines(
+    tp_figure* fig, tp_u32 subplot_row, tp_u32 subplot_col, 
+    const tp_points_desc* points
+);
 
 // Enables utf8 output for the current terminal 
 void tp_enable_utf8_output(void);
@@ -1330,13 +1332,15 @@ static tp_rgb8 _tp_get_draw_col(_tp_axes* axes, tp_rgb8 user_col) {
 }
 
 static void _tp_plot_pointslike(
-    tp_figure* fig, _tp_draw_cmd_kind kind,
+    tp_figure* fig,
+    tp_u32 subplot_row, tp_u32 subplot_col,
+    _tp_draw_cmd_kind kind,
     const tp_points_desc* points_desc
 ) {
     if (fig == NULL || points_desc == NULL) { return; }
     if (
-        points_desc->axes_row >= fig->subplot_rows ||
-        points_desc->axes_col >= fig->subplot_cols ||
+        subplot_row >= fig->subplot_rows ||
+        subplot_col >= fig->subplot_cols ||
         points_desc->ys == NULL
     ) {
         TP_WARN(
@@ -1349,7 +1353,7 @@ static void _tp_plot_pointslike(
     }
 
     _tp_axes* axes = fig->axes + (
-        points_desc->axes_row * fig->subplot_cols + points_desc->axes_col
+        subplot_row * fig->subplot_cols + subplot_col
     );
 
     _tp_info_pointslike pointslike = (_tp_info_pointslike){
@@ -1393,12 +1397,22 @@ static void _tp_plot_pointslike(
     _TP_SLL_PUSH_BACK(axes->first_draw, axes->last_draw, cmd);
 }
 
-void tp_plot_scatter(tp_figure* fig, const tp_points_desc* points) {
-    _tp_plot_pointslike(fig, _TP_DRAW_SCATTER, points);
+void tp_plot_scatter(
+    tp_figure* fig, tp_u32 subplot_row, tp_u32 subplot_col, 
+    const tp_points_desc* points
+) {
+    _tp_plot_pointslike(
+        fig, subplot_row, subplot_col, _TP_DRAW_SCATTER, points
+    );
 }
 
-void tp_plot_lines(tp_figure* fig, const tp_points_desc* points) {
-    _tp_plot_pointslike(fig, _TP_DRAW_LINES, points);
+void tp_plot_lines(
+    tp_figure* fig, tp_u32 subplot_row, tp_u32 subplot_col, 
+    const tp_points_desc* points
+) {
+    _tp_plot_pointslike(
+        fig, subplot_row, subplot_col, _TP_DRAW_LINES, points
+    );
 }
 
 ////////////////////////////////////////////////////////////////////////////////

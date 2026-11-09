@@ -43,10 +43,7 @@ int main(void) {
             y0s[i] = sin(x0s[i]);
         }
 
-        tp_plot_lines(fig, &(tp_points_desc){
-            .axes_row = 0,
-            .axes_col = 0,
-
+        tp_plot_lines(fig, 0, 0, &(tp_points_desc){
             .num_points = N,
             .xs = x0s,
             .ys = y0s,
@@ -60,15 +57,32 @@ int main(void) {
             y0s[i] = cos(x0s[i]);
         }
 
-        tp_plot_scatter(fig, &(tp_points_desc){
-            .axes_row = 0,
-            .axes_col = 0,
-
+        tp_plot_scatter(fig, 0, 0, &(tp_points_desc){
             .num_points = N,
             .xs = x0s,
             .ys = y0s,
 
             .label = TP_STR8("cos"),
+        });
+
+        tp_f64 xticks[] = {
+            0, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI,
+            123456,
+        };
+
+        tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
+            .title = TP_STR8("Here is a subplot"),
+
+            .flags = TP_AXES_LEGEND,
+
+            .legend_pos_x = 0.0,
+            .legend_pos_y = 1.0,
+
+            .xlabel = TP_STR8("Time"),
+            .ylabel = TP_STR8("Ians"),
+
+            .num_xticks = ARR_LEN(xticks),
+            .xticks = xticks,
         });
     }
 
@@ -87,10 +101,7 @@ int main(void) {
 
             snprintf(label, sizeof(label), "line %d", i);
 
-            tp_plot_lines(fig, &(tp_points_desc){
-                .axes_row = 1,
-                .axes_col = 0,
-
+            tp_plot_lines(fig, 1, 0, &(tp_points_desc){
                 .num_points = N,
                 .xs = x0s,
                 .ys = y0s,
@@ -98,44 +109,20 @@ int main(void) {
                 .label = tp_str8_from_cstr((tp_u8*)label),
             });
         }
+
+        tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
+            .title = TP_STR8("Another one"),
+
+            .flags = TP_AXES_LEGEND,
+
+            .xlabel = TP_STR8("this is the x axis"),
+            .ylabel = TP_STR8("Colors"),
+
+            .xmax = scale * 12 * (N + 4) * 1.05,
+            .xmin = -scale * 24,
+        });
     }
-
-    tp_f64 xticks[] = {
-        0, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI,
-        123456,
-    };
-
-    tp_f64 yticks[] = {
-        -50, -1.0, -0.5, 0.0, 0.5, 1.0, 50.0
-    };
-
-    tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
-        .title = TP_STR8("Here is a subplot"),
-
-        .flags = TP_AXES_LEGEND,
-
-        .legend_pos_x = 0.0,
-        .legend_pos_y = 1.0,
-
-        .xlabel = TP_STR8("Time"),
-        .ylabel = TP_STR8("Ians"),
-
-        .num_xticks = ARR_LEN(xticks),
-        .xticks = xticks,
-
-        .num_yticks = ARR_LEN(yticks),
-        .yticks = yticks,
-    });
-
-    tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
-        .title = TP_STR8("Another one"),
-
-        .flags = TP_AXES_LEGEND,
-
-        .xlabel = TP_STR8("this is the x axis"),
-        .ylabel = TP_STR8("Colors"),
-    });
-
+    
     tp_show_and_end(fig);
 
     return 0;
