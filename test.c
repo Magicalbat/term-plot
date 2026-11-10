@@ -39,6 +39,10 @@ int main(void) {
 
         for (u32 i = 0; i < N; i++) {
             y0s[i] = sin(x0s[i]);
+            
+            if (8 < i && i < 16) {
+                y0s[i] = NAN;
+            }
         }
 
         tp_plot_lines(fig, 0, 0, &(tp_points_desc){

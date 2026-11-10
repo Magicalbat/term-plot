@@ -22,7 +22,9 @@
     - [ ] Panning
     - [ ] Zooming
     - [ ] Reset view + undo/redo
-    - [ ] Saving of some sort? 
+    - [ ] Better nan/inf handling
+    - [ ] More extensive examples
+        - [X] Something that updates live
 
 - [ ] Future plans
     - [ ] Other types of plots
