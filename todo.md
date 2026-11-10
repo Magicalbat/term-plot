@@ -22,7 +22,7 @@
     - [ ] Panning
     - [ ] Zooming
     - [ ] Reset view + undo/redo
-    - [ ] Better nan/inf handling
+    - [X] Better nan/inf handling
     - [ ] More extensive examples
         - [X] Something that updates live
 

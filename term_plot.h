@@ -2174,11 +2174,16 @@ static _tp_axes_bounds _tp_pointslike_bounds(
     _tp_axes_bounds cur = _tp_def_axes_bounds;
 
     for (tp_u32 i = 0; i < pointslike->num_points; i++) {
-        cur.xmin = _TP_MIN(cur.xmin, pointslike->xs[i]);
-        cur.xmax = _TP_MAX(cur.xmax, pointslike->xs[i]);
+        tp_f64 x = pointslike->xs[i];
+        tp_f64 y = pointslike->ys[i];
 
-        cur.ymin = _TP_MIN(cur.ymin, pointslike->ys[i]);
-        cur.ymax = _TP_MAX(cur.ymax, pointslike->ys[i]);
+        if (!isfinite(x) || !isfinite(y)) { continue; }
+
+        cur.xmin = _TP_MIN(cur.xmin, x);
+        cur.xmax = _TP_MAX(cur.xmax, x);
+
+        cur.ymin = _TP_MIN(cur.ymin, y);
+        cur.ymax = _TP_MAX(cur.ymax, y);
     }
 
     tp_f64 xdim = cur.xmax - cur.xmin;
@@ -2337,8 +2342,13 @@ static void _tp_draw_scatter(
     _tp_rect_u32 graphable
 ) {
     for (tp_u32 i = 0; i < pointslike->num_points; i++) {
-        tp_i32 dot_x = (tp_i32)(pointslike->xs[i] * bt->xscale + bt->xoff);
-        tp_i32 dot_y = (tp_i32)(pointslike->ys[i] * bt->yscale + bt->yoff);
+        tp_f64 x = pointslike->xs[i];
+        tp_f64 y = pointslike->ys[i];
+
+        if (!isfinite(x) || !isfinite(y)) { continue; }
+
+        tp_i32 dot_x = (tp_i32)(x * bt->xscale + bt->xoff);
+        tp_i32 dot_y = (tp_i32)(y * bt->yscale + bt->yoff);
 
         context->raster_point(dt, graphable, dot_x, dot_y);
     }
@@ -2351,14 +2361,24 @@ static void _tp_draw_lines(
     const _tp_bound_transforms* bt,
     _tp_rect_u32 graphable
 ) {
-    tp_i32 x0 = (tp_i32)(pointslike->xs[0] * bt->xscale + bt->xoff);
-    tp_i32 y0 = (tp_i32)(pointslike->ys[0] * bt->yscale + bt->yoff);
+    tp_f64 x0f = pointslike->xs[0];
+    tp_f64 y0f = pointslike->ys[0];
+    tp_b32 p0_finite = isfinite(x0f) && isfinite(y0f);
 
-    context->raster_point(dt, graphable, x0, y0);
+    tp_i32 x0 = (tp_i32)(x0f * bt->xscale + bt->xoff);
+    tp_i32 y0 = (tp_i32)(y0f * bt->yscale + bt->yoff);
 
     for (tp_u32 i = 1; i < pointslike->num_points; i++) {
-        tp_i32 x1 = (tp_i32)(pointslike->xs[i] * bt->xscale + bt->xoff);
-        tp_i32 y1 = (tp_i32)(pointslike->ys[i] * bt->yscale + bt->yoff);
+        tp_f64 x1f = pointslike->xs[i];
+        tp_f64 y1f = pointslike->ys[i];
+        tp_b32 p1_finite = isfinite(x1f) && isfinite(y1f);
+
+        tp_i32 x1 = (tp_i32)(x1f * bt->xscale + bt->xoff);
+        tp_i32 y1 = (tp_i32)(y1f * bt->yscale + bt->yoff);
+
+        if (!p0_finite || !p1_finite) {
+            goto loop_end;
+        }
 
         tp_i32 dx = _TP_ABS(x1 - x0);
         tp_i32 dy = _TP_ABS(y1 - y0);
@@ -2367,7 +2387,9 @@ static void _tp_draw_lines(
 
         tp_i32 err = (dx > dy ? dx : -dy) / 2;
         for (tp_u32 worstcase = 0; worstcase < 0xffffff; worstcase++) {
-            if (x0 >= x1 && y0 >= y1) { break; }
+            context->raster_point(dt, graphable, x0, y0);
+
+            if (x0 == x1 && y0 == y1) { break; }
 
             tp_i32 new_err = err;
             if (err > -dx) { 
@@ -2381,9 +2403,14 @@ static void _tp_draw_lines(
             }
 
             err = new_err;
-
-            context->raster_point(dt, graphable, x0, y0);
         }
+
+    loop_end:
+        x0f = x1f;
+        y0f = y1f;
+        x0 = x1;
+        y0 = y1;
+        p0_finite = p1_finite;
     }
 }
 
