@@ -516,16 +516,17 @@ void tp_enable_utf8_output(void);
 // `tp_show(...)` does this automatically. You could also of course ues the 
 // ascii rasterizer to avoid utf8 as a whole
 tp_string8 tp_render_utf8(
-    tp_figure* fig, tp_newline_style newline_style,
+    tp_figure* fig,
+    tp_newline_style newline_style, tp_b32 trailing_newline,
     const tp_allocator* allocator
 );
 
 // Prints out the current graph to standard out
-void tp_show(tp_figure* fig);
+void tp_show(tp_figure* fig, tp_b32 trailing_newline);
 
 // This is the same as `tp_show` followed by `tp_end`
 // Shows the figure and deletes it when done
-void tp_show_and_end(tp_figure* fig);
+void tp_show_and_end(tp_figure* fig, tp_b32 trailing_newline);
 
 #ifdef __cplusplus
 }
@@ -1005,31 +1006,21 @@ static void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero) {
     return out;
 }
 
-static void _tp_arena_pop(_tp_arena* arena, tp_u64 size) {
-    size = _TP_MIN(size, _tp_arena_get_pos(arena));
+static void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos) {
+    tp_u64 cur_pos = _tp_arena_get_pos(arena);
+    pos = _TP_CLAMP(pos, _TP_ARENA_HEADER_SIZE, cur_pos);
 
     _tp_arena* current = arena->current;
-    while (current != NULL && size > current->pos) {
+    while (current != NULL && current->base_pos >= pos) {
         _tp_arena* prev = current->prev;
 
-        size -= current->pos;
         _tp_mem_release(current, current->reserve_size);
 
         current = prev;
     }
 
     arena->current = current;
-
-    size = _TP_MIN(current->pos - _TP_ARENA_HEADER_SIZE, size);
-    current->pos -= size;
-}
-
-static void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos) {
-    tp_u64 cur_pos = _tp_arena_get_pos(arena);
-    
-    pos = _TP_MIN(pos, cur_pos);
-
-    _tp_arena_pop(arena, cur_pos - pos);
+    current->pos = _TP_MAX(pos - current->base_pos, _TP_ARENA_HEADER_SIZE);
 }
 
 static void _tp_arena_clear(_tp_arena* arena) {
@@ -1391,11 +1382,16 @@ typedef struct tp_figure {
 } tp_figure;
 
 static tp_figure* _tp_fig_init(
-    _tp_arena* arena, const tp_figure_desc* desc
+    _tp_arena* arena, const tp_figure_desc* fig_desc
 ) {
+    tp_figure_desc desc = { 0 };
+    if (fig_desc != NULL) {
+        desc = *fig_desc;
+    }
+
     if (
-        desc->subplot_rows > TP_MAX_SUBPLOT_ROWS || 
-        desc->subplot_cols > TP_MAX_SUBPLOT_COLS
+        desc.subplot_rows > TP_MAX_SUBPLOT_ROWS || 
+        desc.subplot_cols > TP_MAX_SUBPLOT_COLS
     ) {
         TP_WARN(
             "[term-plot Warning] "
@@ -1410,23 +1406,23 @@ static tp_figure* _tp_fig_init(
     *fig = (tp_figure){
         .arena = arena,
 
-        .subplot_rows = _TP_CLAMP(desc->subplot_rows, 1, TP_MAX_SUBPLOT_ROWS),
-        .subplot_cols = _TP_CLAMP(desc->subplot_cols, 1, TP_MAX_SUBPLOT_COLS),
+        .subplot_rows = _TP_CLAMP(desc.subplot_rows, 1, TP_MAX_SUBPLOT_ROWS),
+        .subplot_cols = _TP_CLAMP(desc.subplot_cols, 1, TP_MAX_SUBPLOT_COLS),
 
-        .char_width = desc->char_width,
-        .char_height = desc->char_height,
+        .char_width = desc.char_width,
+        .char_height = desc.char_height,
 
-        .width_offset = desc->char_width_offset,
-        .height_offset = desc->char_height_offset,
+        .width_offset = desc.char_width_offset,
+        .height_offset = desc.char_height_offset,
 
-        .raster_type = desc->raster_type,
+        .raster_type = desc.raster_type,
 
-        .monochrome = desc->monochrome,
+        .monochrome = desc.monochrome,
 
-        .padding = desc->override_padding ? desc->custom_padding : 1,
-        .margin = desc->override_margin ? desc->custom_margin : 1,
+        .padding = desc.override_padding ? desc.custom_padding : 1,
+        .margin = desc.override_margin ? desc.custom_margin : 1,
 
-        .title = _tp_str8_copy(arena, desc->title),
+        .title = _tp_str8_copy(arena, desc.title),
     };
 
     fig->axes = _TP_PUSH_ARRAY(
@@ -1438,7 +1434,7 @@ static tp_figure* _tp_fig_init(
 
     tp_f64 width_ratio_sum = 0.0;
     for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
-        width_ratio_sum += desc->width_ratios[i];
+        width_ratio_sum += desc.width_ratios[i];
     }
 
     if (width_ratio_sum == 0) {
@@ -1449,13 +1445,13 @@ static tp_figure* _tp_fig_init(
         }
     } else {
         for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
-            fig->width_fractions[i] = desc->width_ratios[i] / width_ratio_sum;
+            fig->width_fractions[i] = desc.width_ratios[i] / width_ratio_sum;
         }
     }
 
     tp_f64 height_ratio_sum = 0.0;
     for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
-        height_ratio_sum += desc->height_ratios[i];
+        height_ratio_sum += desc.height_ratios[i];
     }
 
     if (height_ratio_sum == 0) {
@@ -1466,7 +1462,7 @@ static tp_figure* _tp_fig_init(
         }
     } else {
         for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
-            fig->height_fractions[i] = desc->height_ratios[i] / height_ratio_sum;
+            fig->height_fractions[i] = desc.height_ratios[i] / height_ratio_sum;
         }
     }
 
@@ -1474,8 +1470,6 @@ static tp_figure* _tp_fig_init(
 }
 
 tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
-    if (fig_desc == NULL) { return NULL; }
-
     _tp_arena* arena = _tp_arena_create(
         TP_MEM_RESERVE_SIZE, TP_MEM_COMMIT_SIZE
     );
@@ -1487,12 +1481,7 @@ void tp_reset(tp_figure* fig, const tp_figure_desc* fig_desc) {
     _tp_arena* arena = fig->arena;
     _tp_arena_clear(arena);
 
-    if (fig_desc == NULL) {
-        tp_figure_desc def_desc = { 0 };
-        fig = _tp_fig_init(arena, &def_desc);
-    } else {
-        fig = _tp_fig_init(arena, fig_desc);
-    }
+    fig = _tp_fig_init(arena, fig_desc);
 }
 
 void tp_end(tp_figure* fig) {
@@ -1905,8 +1894,8 @@ static _tp_draw_target _tp_draw_target_create(
 // Returns the number of bytes it would take to encode the draw target
 static tp_u64 _tp_draw_target_encode_size(
     _tp_draw_target* dt,
-    tp_newline_style newline_style,
-    tp_b32 with_color
+    tp_newline_style newline_style, tp_b8 trailing_newline,
+    tp_b8 with_color
 ) {
     if (dt->width == 0 || dt->height == 0) {
         return 0;
@@ -1918,7 +1907,9 @@ static tp_u64 _tp_draw_target_encode_size(
     );
 
     // Newline size
-    size += (newline_style == TP_NEWLINE_LF ? 1 : 2) * (dt->height - 1);
+    size +=
+        (newline_style == TP_NEWLINE_LF ? 1 : 2) *
+        (trailing_newline ? dt->height : dt->height - 1);
 
     // Ansi color sizes
     if (with_color) {
@@ -1949,8 +1940,8 @@ static tp_u64 _tp_draw_target_encode_size(
 // Encodes the draw_target to a utf8 code with ansi codes
 static void _tp_draw_target_encode(
     _tp_draw_target* dt,
-    tp_newline_style newline_style,
-    tp_b32 with_color, tp_u8* out
+    tp_newline_style newline_style, tp_b8 trailing_newline,
+    tp_b8 with_color, tp_u8* out
 ) {
     if (dt->width == 0 || dt->height == 0) {
         return;
@@ -2009,6 +2000,20 @@ static void _tp_draw_target_encode(
 
     if (with_color) {
         memcpy(out + pos, _TP_ANSI_RESET, sizeof(_TP_ANSI_RESET) - 1);
+        out += sizeof(_TP_ANSI_RESET) - 1;
+    }
+
+    if (trailing_newline) {
+        switch (newline_style) {
+            case TP_NEWLINE_LF: {
+                out[pos++] = '\n';
+            } break;
+
+            case TP_NEWLINE_CRLF: {
+                out[pos++] = '\r';
+                out[pos++] = '\n';
+            } break;
+        }
     }
 }
 
@@ -2898,7 +2903,8 @@ static void _tp_draw_figure(
 ////////////////////////////////////////////////////////////////////////////////
 
 tp_string8 tp_render_utf8(
-    tp_figure* fig, tp_newline_style newline_style,
+    tp_figure* fig,
+    tp_newline_style newline_style, tp_b32 trailing_newline,
     const tp_allocator* allocator
 ) {
     tp_string8 out = { 0 };
@@ -2930,7 +2936,8 @@ tp_string8 tp_render_utf8(
     _tp_draw_figure(fig, &draw_target, &layout, &draw_context, draw_area);
 
     tp_u64 rendered_size = _tp_draw_target_encode_size(
-        &draw_target, newline_style, !fig->monochrome
+        &draw_target, newline_style,
+        (tp_b8)trailing_newline, !fig->monochrome
     );
 
     if (allocator == NULL) {
@@ -2945,7 +2952,7 @@ tp_string8 tp_render_utf8(
         out.size = rendered_size;
 
         _tp_draw_target_encode(
-            &draw_target, newline_style,
+            &draw_target, newline_style, (tp_b8)trailing_newline,
             !fig->monochrome, out.str
         );
     }
@@ -2956,7 +2963,7 @@ end:
     return out;
 }
 
-void tp_show(tp_figure* fig) {
+void tp_show(tp_figure* fig, tp_b32 trailing_newline) {
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
 
     _tp_dim_u32 fig_size = _tp_size_figure(fig, _TP_FALSE);
@@ -2984,7 +2991,8 @@ void tp_show(tp_figure* fig) {
     _tp_draw_figure(fig, &draw_target, &layout, &draw_context, draw_area);
 
     tp_u64 rendered_size = _tp_draw_target_encode_size(
-        &draw_target, TP_NEWLINE_LF, !fig->monochrome
+        &draw_target, TP_NEWLINE_LF,
+        (tp_b8)trailing_newline, !fig->monochrome
     );
 
     tp_string8 rendered = {
@@ -2993,7 +3001,8 @@ void tp_show(tp_figure* fig) {
     };
 
     _tp_draw_target_encode(
-        &draw_target, TP_NEWLINE_LF, !fig->monochrome, rendered.str
+        &draw_target, TP_NEWLINE_LF, (tp_b8)trailing_newline,
+        !fig->monochrome, rendered.str
     );
 
     tp_enable_utf8_output();
@@ -3003,8 +3012,8 @@ end:
     _tp_arena_temp_end(temp_arena);
 }
 
-void tp_show_and_end(tp_figure* fig) {
-    tp_show(fig);
+void tp_show_and_end(tp_figure* fig, tp_b32 trailing_newline) {
+    tp_show(fig, trailing_newline);
     tp_end(fig);
 }
 
