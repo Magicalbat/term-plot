@@ -1,4 +1,4 @@
-- [ ] MVP (sans interactive plots)
+- [X] MVP (sans interactive plots)
     - [X] Basic ascii rendering
     - [X] Redesign raster type backends
     - [X] Color pass
@@ -13,7 +13,7 @@
     - [X] Figure reset
     - [X] Static show + Console write abstraction
     - [X] Make a nicer README.md
-    - [ ] Add large doc comment at the top of the header
+    - [X] Add large doc comment at the top of the header
     - [X] Make all the internal stuff static (oops)
 
 - [ ] Full MVP (Interactive plots)

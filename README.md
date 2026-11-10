@@ -80,6 +80,8 @@ codes included in this stream (set `monochrome` to true in your `tp_figure_desc`
 to avoid this), and 2) directly printing this output might not work in some 
 terminals without first calling `tp_enable_utf8_output()`.
 
+More extensive documentation can be found at the top of `term_plot.h`.
+
 ## How to build
 
 `term_plot.h` can be included as a header file anywhere, but you must pick 

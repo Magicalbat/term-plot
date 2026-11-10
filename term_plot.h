@@ -1,3 +1,230 @@
+/*
+    term_plot.h --- terminal based plotting, generally intended for 
+    non-user-facing developer applications that need to quickly plot something 
+
+    Put
+        #define TERM_PLOT_IMPLEMENTATION
+    before including this file in *one* C file to create the implementation.
+    Also, make sure to link to libc's math library.
+
+    Optionally define the following before the implementation:
+
+    TP_FATAL_ERROR - Takes an `const char*` error message upon fatal errors
+    TP_WARN - Takes a `const char*` warning message on warnings
+    TP_SNPRINTF - If you want to override libc's `snprintf`
+
+    TP_AXIS_NUM_CHARS - Number of characters to use when displaying axis 
+        numbers (defaults to 7)
+    TP_MEM_RESERVE_SIZE - Number of bytes figures reserve initially
+    TP_MEM_COMMIT_SIZE - Number of bytes figures will commit memory by
+
+    If you would like to avoid `stdio.h` entirely, you must do the following:
+        - Define `TP_FATAL_ERROR`
+        - Define `TP_WARN`
+        - Define `TP_SNPRINTF`
+        - Use win32 or unix as a platform
+    If these requirements are too constraining, I would just recommend 
+    removing the parts of `term_plot.h` that use `stdio.h`.
+
+
+    LIBRARY OVERVIEW / GENERAL NOTES
+    --------------------------------
+    term_plot.h has a workflow that should be familiar to anyone that has used
+    matplotlib. One overall graph is called a figure, and each figure can have
+    a grid of subplot. Each subplot is a set of axes that you can issue plotting
+    commands to. You can then directly display your graph in the terminal, or
+    render the graph out to a UTF-8 stream. 
+
+    term_plot.h heavily utilizes the descriptor pattern that I believe was
+    popularized by the sokol libraries. That is, many non-trivial functions 
+    will take a const* to a *_desc struct as a parameter. This is designed to 
+    work well with C's designated initializers, as a descriptor of all 0s will
+    almost always be valid (the primary exception is for plotting commands). 
+    Here is an example of the desciptor pattern that creates a figure with 
+    2 x 1 subplots and a title:
+
+    tp_figure* fig = tp_begin(&(tp_figure_desc){
+        .subplot_rows = 2,
+        .subplot_cols = 1,
+
+        .title = TP_STR8("Example Figure"),
+    });
+
+    Notice how C allows you to get the address of temporary local variables.
+
+    term_plot.h also works exclusively with length based strings. The type for
+    this is `tp_string8`. If you have a string literal, you can use the macro
+    `TP_STR8(...)`. If you have a dynamic cstring, you can call 
+    `tp_str8_from_cstr(...)`.
+
+
+    BASIC USAGE
+    -----------
+    1) Create a figure using the `tp_begin` command. For one set of axes, you 
+        can pass in the default `tp_fig_desc`.
+    3) Optionally call `tp_setup_axes` to configure any axes
+    2) Issue any number of `tp_plot_*` commands
+    3) Call `tp_show_and_end(...)` to display and destroy the figure
+
+
+    NOTE ON MEMORY
+    --------------
+    Internally, term_plot.h uses arena allocators for all its memory needs. 
+    That is, when you create a `tp_figure*`, a memory arena is created 
+    alongside the figure, calling `mmap` or `VirtualAlloc` directly. This makes
+    term_plot.h faster and a lot more sensible to develop, but it does mean 
+    that it is less flexible. If you need more control over the internal memory
+    allocation, this is probably not the library for you. 
+
+    That being said, the one function that returns allocated memory,
+    `tp_render_utf8(...)`, does take an allocator that can be configured. This 
+    is because its rendered output can persist in memory past the the lifetime
+    of the figure itself. 
+
+    Any function in term_plot.h that takes a pointer to memory that needs to 
+    persist until rendering will copy said memory. For example, term_plot.h 
+    copies the title of axes during setup; it copies the `xs` and `ys` array 
+    when plotting lines. This means that any data passed into a function in 
+    term_plot.h only needs to persist for the duration of the function call 
+    itself.
+
+
+    MORE DETAILED LOOK
+    ------------------
+    Each individual function and struct in term_plot.h should be fully 
+    documented in the header portion of this file, but I think think that it 
+    is useful to give a more detailed overview of its capabilities as an 
+    introduction.
+
+    Everything figures:
+        
+        As I have already said, figures represent one visual graph. They also 
+        hold all the memory and information associated with that graph. 
+
+        You can create a figure with `tp_begin(...)`. The following things are
+        configurable on a figure-basis:
+        - Number of subplot rows and columns. It is worth noting that there is
+            a maximum number of subplot rows and columns that is defined 
+            directly in this header file (as opposed to one of the overridable)
+            options. This is to enable nicer structures and more static memory
+            requirements, but if you would like to increase these numbers, you
+            need to directly modify this file.
+        - Visual size of the figure in characters, can be specified absolutely
+            and relative to the current terminal size
+        - Type of raster to use. Right now, the only options are braille and 
+            ascii
+        - Title
+        - Width and height ratios to provide more dynamic sizing of subplots
+        - Monochrome rendering (this can be useful when rendering the graph as 
+            a UTF-8 stream)
+        - Margin and padding (you must set `override_padding` and
+            `override_margin` if you want to change them)
+
+        term_plot.h gives you a lot of control over the lifetime of a figure. 
+        Because figure creation fetches memory directly from the operating 
+        system, you generally do not want to do that all too often. That is why 
+        the function `tp_reset(...)` exists. It clears all the data associated 
+        with the figure while holding on to the memory. This can be used, for 
+        instance, to plot something dynamically over time. 
+
+        Once you are done with a figure, make sure to call `tp_end(...)`. For 
+        convenience, there is also a function `tp_show_and_end(...)`, which 
+        will show the figure and free its memory. This is because it is common
+        to be done with a figure once it is displayed. 
+
+
+    Information about axes:
+        
+        Axes are created implicitly when you create your figure, but they can 
+        be configured individually with the `tp_setup_axes(...)` function. 
+
+        The following can be configured:
+        - Whether or not to display x and y ticks and numbers along their 
+            respective axes
+        - Subplot title, x-axis label, and y-axis label
+        - Background color
+        - Minimum and maximum display bounds for the x and y axes. By default, 
+            the bounds will be chosen to fit the data
+        - Override x and y ticks. This can be useful if you want more precise
+            ticks like multiples of PI
+        - Spacing of automatically generated ticks
+        - Whether or not to enable the legend, and the position of the legend.
+            The legend is displayed over top the graph itself, so you may want
+            to play around with its position. The position is specified in 
+            normalized coordinates, where (0, 0) is the top left and (1, 1) is 
+            the bottom right
+
+        One thing to note: because of how each piece of data is copied
+        internally for the axes (namely the strings and ticks), you technically
+        leak memory by calling `tp_setup_axes` multiple times in a row on the
+        same set of axes.
+
+
+    Notes on plotting:
+        
+        Right now, only two types of plotting are supported: scatter plots and
+        line plots. These both take the same descriptor struct,
+        `tp_points_desc`.
+
+        `tp_points_desc` options:
+        - The primary members are the `xs` and `ys` pointers to lists of 
+            doubles, each of length `num_points`. You must set `ys` and
+            `num_points`, but you can leave `xs` as NULL to fill in values from
+            0 to `num_points-1`.
+        - `label` sets the label. This really only matters if the legend is
+            enabled
+        - `col` sets the color of the plot command. A color of { 0, 0, 0 } will
+            actually get overridden with the default cycle of colors to make the
+            API more smooth for designated initializers
+
+
+    VIEWING THE FIGURE
+    ------------------
+    There are two primary ways to render the figure: you can get a UTF-8 stream
+    of the graph, or you can directly display the graph in the terminal.
+
+    `tp_render_utf8(...)` does the former of these two. You can also specify an
+    allocator to use for the resulting string as well as a newline style (this
+    is more for terminals in raw mode than supporting MS-DOS). If `monochrome`
+    is false in the figure, the resulting UTF-8 stream will have ANSI escape
+    color codes in it. If you plan to display this stream to the console, it is
+    a good idea to first call `tp_enable_utf8_output()`. On Linux, I think that
+    terminals are generally UTF-8 by default nowadays, but Windows in its 
+    infinite wisdom still uses extended ASCII by default, and you need to 
+    explicitly enable UTF-8 output for the console. 
+
+    `tp_show(...)` (and `tp_show_and_end(...)`) are the primary functions for
+    actually displaying the graph. They simply display the graph to the 
+    terminal. I have plans in the future for adding an interactive mode to 
+    these functions that lets you pan and zoom in the graphs, but I have not
+    gotten around to that yet. 
+
+
+    LICENSE
+    -------
+    MIT License
+
+    Copyright (c) 2026 Ian Dvorin
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+*/
 
 #ifndef TERM_PLOT_H_INCLUDE
 #define TERM_PLOT_H_INCLUDE
@@ -6,20 +233,9 @@
 extern "C" {
 #endif
 
-#ifndef TP_MAX_SUBPLOT_ROWS 
-#   define TP_MAX_SUBPLOT_ROWS 8
-#endif
-
-#ifndef TP_MAX_SUBPLOT_COLS 
-#   define TP_MAX_SUBPLOT_COLS 8
-#endif
-
+#define TP_MAX_SUBPLOT_ROWS 4
+#define TP_MAX_SUBPLOT_COLS 4
 #define TP_MAX_SUBPLOTS (TP_MAX_SUBPLOT_ROWS * TP_MAX_SUBPLOT_COLS)
-
-// Number of characters to display for the axis numbers
-#ifndef TP_AXIS_NUM_CHARS
-#   define TP_AXIS_NUM_CHARS 7
-#endif
 
 #include <stdint.h>
 
@@ -53,25 +269,38 @@ typedef struct {
 #define TP_STR8(s) (tp_string8){ (tp_u8*)(s), sizeof((s)) - 1 }
 
 typedef enum {
+    // Will render the main graph as a set of braille characters, and utilize
+    // full unicode characters for the axes
     TP_RASTER_BRAILLE = 0,
+
+    // Ensures that all rendered characters are ascii
     TP_RASTER_ASCII,
 
     _TP_RASTER_COUNT,
 } tp_raster_type;
 
 typedef enum {
+    // Enables the legend for the set of axes
     TP_AXES_LEGEND    = 0b000001,
+
+    // Disables the rendering of the y tick marks
     TP_AXES_NO_XTICKS = 0b000010,
+
+    // Disables the rendering of the x tick marks 
     TP_AXES_NO_YTICKS = 0b000100,
+
+    // Disables the drawing of the x axis numbers
     TP_AXES_NO_XNUMS  = 0b001000,
+
+    // Disables the drawing of the y axis numbers
     TP_AXES_NO_YNUMS  = 0b010000,
 } tp_axes_flags;
 
 typedef enum {
-    // Unix style
+    // Unix style (\n)
     TP_NEWLINE_LF = 0,
 
-    // Windows style
+    // Windows style (\r\n)
     TP_NEWLINE_CRLF,
 } tp_newline_style;
 
@@ -105,6 +334,9 @@ typedef struct tp_figure_desc {
     // An offset applied after calculating the base figure height
     // This is so that you can implicity graph something like (term_height - 2)
     tp_i32 char_height_offset;
+    
+    // Type of raster to use. See `tp_raster_type` for more detail
+    tp_raster_type raster_type;
 
     tp_string8 title;
 
@@ -119,8 +351,6 @@ typedef struct tp_figure_desc {
     // All zeros will default to uniform sizing
     // Each row gets a relative height of `height_ratios[i]/sum(height_ratios)`
     tp_f64 height_ratios[TP_MAX_SUBPLOT_ROWS];
-
-    tp_raster_type raster_type;
 
     // If true, no color will be output
     tp_b8 monochrome;
@@ -144,6 +374,7 @@ typedef struct tp_figure_desc {
 } tp_figure_desc;
 
 typedef struct tp_axes_desc {
+    // See `tp_axes_flags` for details
     tp_axes_flags flags;
 
     tp_string8 xlabel;
@@ -215,7 +446,15 @@ typedef struct tp_points_desc {
     tp_u32 num_points;
 
     // `xs` can be NULL. If it is, the plot will use 0...`num_points`-1
+    //
+    // If not NULL, the contents of `xs` is immediately copied in any plotting
+    // command, meaning that the pointer only needs to be valid for the 
+    // duration of the function call
     tp_f64* xs;
+
+    // The contents of `ys` will be immediately copied in any plotting command,
+    // meaning that the pointer only needs to be valid for the duration of the
+    // function call
     tp_f64* ys;
 
     tp_string8 label;
@@ -308,7 +547,6 @@ void tp_show_and_end(tp_figure* fig);
 extern "C" {
 #endif
 
-
 #include <stddef.h>
 #include <string.h> // memset, memcpy
 #include <math.h>
@@ -339,7 +577,7 @@ extern "C" {
 #endif
 
 #ifndef TP_SNPRINTF
-#   define TP_SNPRINTF snprintf
+#define TP_SNPRINTF snprintf
 #endif
 
 #define _TP_ABS(x) ((x) < 0 ? -(x) : (x))
@@ -361,6 +599,19 @@ extern "C" {
 
 #define _TP_TRUE 1
 #define _TP_FALSE 0
+
+// Number of characters to display for the axis numbers
+#ifndef TP_AXIS_NUM_CHARS
+#   define TP_AXIS_NUM_CHARS 7
+#endif
+
+#ifndef TP_MEM_RESERVE_SIZE
+#   define TP_MEM_RESERVE_SIZE _TP_KiB(64)
+#endif
+
+#ifndef TP_MEM_COMMIT_SIZE
+#   define TP_MEM_COMMIT_SIZE _TP_KiB(16)
+#endif
 
 typedef struct {
     tp_u32 width, height;
@@ -585,13 +836,6 @@ void* _tp_mem_reserve(tp_u64 size) {
 }
 
 tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
-    (void)mem;
-    (void)size;
-
-    return _TP_TRUE;
-}
-
-tp_b32 _tp_mem_decommit(void* mem, tp_u64 size) {
     (void)mem;
     (void)size;
 
@@ -1147,18 +1391,16 @@ typedef struct tp_figure {
 } tp_figure;
 
 static tp_figure* _tp_fig_init(
-    _tp_arena* arena, const tp_figure_desc* fig_desc
+    _tp_arena* arena, const tp_figure_desc* desc
 ) {
-    tp_figure_desc desc = fig_desc == NULL ? (tp_figure_desc){ 0 } : *fig_desc;
-
     if (
-        desc.subplot_rows > TP_MAX_SUBPLOT_ROWS || 
-        desc.subplot_cols > TP_MAX_SUBPLOT_COLS
+        desc->subplot_rows > TP_MAX_SUBPLOT_ROWS || 
+        desc->subplot_cols > TP_MAX_SUBPLOT_COLS
     ) {
         TP_WARN(
             "[term-plot Warning] "
             "Clamping figure subplot rows and columns to maximum. "
-            "If this is an issue, consider defining `TP_MAX_SUBPLOT_ROWS` "
+            "If this is an issue, consider changing `TP_MAX_SUBPLOT_ROWS` "
             "and/or `TP_MAX_SUBPLOT_COLS` to a higher number.\n"
         );
     }
@@ -1168,43 +1410,35 @@ static tp_figure* _tp_fig_init(
     *fig = (tp_figure){
         .arena = arena,
 
-        .subplot_rows = _TP_CLAMP(desc.subplot_rows, 1, TP_MAX_SUBPLOT_ROWS),
-        .subplot_cols = _TP_CLAMP(desc.subplot_cols, 1, TP_MAX_SUBPLOT_COLS),
+        .subplot_rows = _TP_CLAMP(desc->subplot_rows, 1, TP_MAX_SUBPLOT_ROWS),
+        .subplot_cols = _TP_CLAMP(desc->subplot_cols, 1, TP_MAX_SUBPLOT_COLS),
 
-        .char_width = desc.char_width,
-        .char_height = desc.char_height,
+        .char_width = desc->char_width,
+        .char_height = desc->char_height,
 
-        .width_offset = desc.char_width_offset,
-        .height_offset = desc.char_height_offset,
+        .width_offset = desc->char_width_offset,
+        .height_offset = desc->char_height_offset,
 
-        .raster_type = desc.raster_type,
+        .raster_type = desc->raster_type,
 
-        .monochrome = desc.monochrome,
+        .monochrome = desc->monochrome,
 
-        .padding = desc.override_padding ? desc.custom_padding : 1,
-        .margin = desc.override_margin ? desc.custom_margin : 1,
+        .padding = desc->override_padding ? desc->custom_padding : 1,
+        .margin = desc->override_margin ? desc->custom_margin : 1,
 
-        .title = _tp_str8_copy(arena, desc.title),
+        .title = _tp_str8_copy(arena, desc->title),
     };
 
     fig->axes = _TP_PUSH_ARRAY(
         arena, _tp_axes, fig->subplot_rows * fig->subplot_cols
     );
 
-    // Setting up axes with default stuff
-    // Default setup should not allocate memory
-    for (tp_u32 row = 0; row < fig->subplot_rows; row++) {
-        for (tp_u32 col = 0; col < fig->subplot_cols; col++) {
-            tp_setup_axes(fig, row, col, NULL);
-        }
-    }
-
     fig->width_fractions = _TP_PUSH_ARRAY_NZ(arena, tp_f64, fig->subplot_cols);
     fig->height_fractions = _TP_PUSH_ARRAY_NZ(arena, tp_f64, fig->subplot_rows);
 
     tp_f64 width_ratio_sum = 0.0;
     for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
-        width_ratio_sum += desc.width_ratios[i];
+        width_ratio_sum += desc->width_ratios[i];
     }
 
     if (width_ratio_sum == 0) {
@@ -1215,13 +1449,13 @@ static tp_figure* _tp_fig_init(
         }
     } else {
         for (tp_u32 i = 0; i < fig->subplot_cols; i++) {
-            fig->width_fractions[i] = desc.width_ratios[i] / width_ratio_sum;
+            fig->width_fractions[i] = desc->width_ratios[i] / width_ratio_sum;
         }
     }
 
     tp_f64 height_ratio_sum = 0.0;
     for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
-        height_ratio_sum += desc.height_ratios[i];
+        height_ratio_sum += desc->height_ratios[i];
     }
 
     if (height_ratio_sum == 0) {
@@ -1232,7 +1466,7 @@ static tp_figure* _tp_fig_init(
         }
     } else {
         for (tp_u32 i = 0; i < fig->subplot_rows; i++) {
-            fig->height_fractions[i] = desc.height_ratios[i] / height_ratio_sum;
+            fig->height_fractions[i] = desc->height_ratios[i] / height_ratio_sum;
         }
     }
 
@@ -1240,7 +1474,12 @@ static tp_figure* _tp_fig_init(
 }
 
 tp_figure* tp_begin(const tp_figure_desc* fig_desc) {
-    _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
+    if (fig_desc == NULL) { return NULL; }
+
+    _tp_arena* arena = _tp_arena_create(
+        TP_MEM_RESERVE_SIZE, TP_MEM_COMMIT_SIZE
+    );
+
     return _tp_fig_init(arena, fig_desc);
 }
 
@@ -1248,7 +1487,12 @@ void tp_reset(tp_figure* fig, const tp_figure_desc* fig_desc) {
     _tp_arena* arena = fig->arena;
     _tp_arena_clear(arena);
 
-    fig = _tp_fig_init(arena, fig_desc);
+    if (fig_desc == NULL) {
+        tp_figure_desc def_desc = { 0 };
+        fig = _tp_fig_init(arena, &def_desc);
+    } else {
+        fig = _tp_fig_init(arena, fig_desc);
+    }
 }
 
 void tp_end(tp_figure* fig) {
@@ -1258,12 +1502,12 @@ void tp_end(tp_figure* fig) {
 }
 
 void tp_setup_axes(
-    tp_figure* fig, tp_u32 arow, tp_u32 acol,
-    const tp_axes_desc* axes_desc
+    tp_figure* fig, tp_u32 suplot_row, tp_u32 suplot_col,
+    const tp_axes_desc* desc
 ) {
-    if (fig == NULL) { return; }
+    if (fig == NULL || desc == NULL) { return; }
 
-    if (arow >= fig->subplot_rows || acol >= fig->subplot_cols) {
+    if (suplot_row >= fig->subplot_rows || suplot_col >= fig->subplot_cols) {
         TP_WARN(
             "[term-plot Warning] "
             "Ignoring out of bounds call to `tp_setup_axes`.\n"
@@ -1272,46 +1516,41 @@ void tp_setup_axes(
         return;
     }
 
-    tp_axes_desc desc = axes_desc == NULL ? (tp_axes_desc){ } : *axes_desc;
-
-    _tp_axes* axes = fig->axes + (arow * fig->subplot_cols + acol);
+    _tp_axes* axes = fig->axes + (suplot_row * fig->subplot_cols + suplot_col);
 
     // Not recreating the entirety of the axes struct in case there are 
     // already registered draw commands
 
-    axes->flags = desc.flags;
+    axes->flags = desc->flags;
 
-    axes->xlabel = _tp_str8_copy(fig->arena, desc.xlabel);
-    axes->ylabel = _tp_str8_copy(fig->arena, desc.ylabel);
-    axes->title = _tp_str8_copy(fig->arena, desc.title);
+    axes->xlabel = _tp_str8_copy(fig->arena, desc->xlabel);
+    axes->ylabel = _tp_str8_copy(fig->arena, desc->ylabel);
+    axes->title = _tp_str8_copy(fig->arena, desc->title);
 
-    axes->bg_col = desc.bg_col;
+    axes->bg_col = desc->bg_col;
 
-    axes->xmin = desc.xmin;
-    axes->xmax = desc.xmax;
-    axes->ymin = desc.ymin;
-    axes->ymax = desc.ymax;
+    axes->xmin = desc->xmin;
+    axes->xmax = desc->xmax;
+    axes->ymin = desc->ymin;
+    axes->ymax = desc->ymax;
 
-    if (desc.num_xticks > 0 && desc.xticks != NULL) {
-        axes->num_xticks = desc.num_xticks;
+    if (desc->num_xticks > 0 && desc->xticks != NULL) {
+        axes->num_xticks = desc->num_xticks;
         axes->xticks = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, axes->num_xticks);
-        memcpy(axes->xticks, desc.xticks, sizeof(tp_f64) * axes->num_xticks);
+        memcpy(axes->xticks, desc->xticks, sizeof(tp_f64) * axes->num_xticks);
     }
 
-    if (desc.num_yticks > 0 && desc.yticks != NULL) {
-        axes->num_yticks = desc.num_yticks;
+    if (desc->num_yticks > 0 && desc->yticks != NULL) {
+        axes->num_yticks = desc->num_yticks;
         axes->yticks = _TP_PUSH_ARRAY_NZ(fig->arena, tp_f64, axes->num_yticks);
-        memcpy(axes->yticks, desc.yticks, sizeof(tp_f64) * axes->num_yticks);
+        memcpy(axes->yticks, desc->yticks, sizeof(tp_f64) * axes->num_yticks);
     }
 
-    axes->desired_xtick_gap = desc.desired_xtick_gap == 0 ?
-        12 : desc.desired_xtick_gap;
+    axes->desired_xtick_gap = desc->desired_xtick_gap;
+    axes->desired_ytick_gap = desc->desired_ytick_gap;
 
-    axes->desired_ytick_gap = desc.desired_ytick_gap == 0 ?
-        4 : desc.desired_ytick_gap;
-
-    axes->legend_pos_x = _TP_CLAMP(desc.legend_pos_x, 0.0, 1.0);
-    axes->legend_pos_y = _TP_CLAMP(desc.legend_pos_y, 0.0, 1.0);
+    axes->legend_pos_x = _TP_CLAMP(desc->legend_pos_x, 0.0, 1.0);
+    axes->legend_pos_y = _TP_CLAMP(desc->legend_pos_y, 0.0, 1.0);
 }
 
 // This will return `user_col` if it is non-zero, otherwise it will return the
@@ -1880,7 +2119,7 @@ static void _tp_ascii_draw_point(
     tp_u32 index = (graphable.x + (tp_u32)x) +
         (graphable.y + (tp_u32)y) * dt->width;
 
-    dt->codepoints[index] = U'#';
+    dt->codepoints[index] = (tp_u32)'#';
 
     tp_u32 bit_index = (tp_u32)x + (tp_u32)y * graphable.w;
     dt->col_bitmask[bit_index / 64] |= (tp_u64)1 << (bit_index % 64);
@@ -2335,19 +2574,19 @@ static void _tp_draw_legend(
     ) {
         if (cmd->label.size == 0) { continue; }
 
-        tp_u32 sym = U' ';
+        tp_u32 sym = (tp_u32)' ';
         tp_rgb8 fg_col = { 255, 255, 255 };
 
         switch (cmd->kind) {
             case _TP_DRAW_NONE: break;
 
             case _TP_DRAW_SCATTER: {
-                sym = U'*';
+                sym = (tp_u32)'*';
                 fg_col = cmd->info.scatter.col;
             } break;
 
             case _TP_DRAW_LINES: {
-                sym = U'-';
+                sym = (tp_u32)'-';
                 fg_col = cmd->info.lines.col;
             } break;
         }
@@ -2388,18 +2627,18 @@ static void _tp_draw_axes(
         dt, drawable, axes->title, 0, (tp_rgb8){ 255, 255, 255}
     );
     
-    tp_u32 origin = U'┗';
-    tp_u32 xbar = U'━';
-    tp_u32 ybar = U'┃';
-    tp_u32 xtick = U'┯';
-    tp_u32 ytick = U'┨';
+    tp_u32 origin = 0x2517; // '┗'
+    tp_u32 xbar = 0x2501; // '━'
+    tp_u32 ybar = 0x2503; // '┃'
+    tp_u32 xtick = 0x252f; // '┯'
+    tp_u32 ytick = 0x2528; // '┨'
 
     if (fig->raster_type == TP_RASTER_ASCII) {
-        origin = U'o';
-        xbar = U'-';
-        ybar = U'|';
-        xtick = U'+';
-        ytick = U'+';
+        origin = (tp_u32)'o';
+        xbar = (tp_u32)'-';
+        ybar = (tp_u32)'|';
+        xtick = (tp_u32)'+';
+        ytick = (tp_u32)'+';
     }
 
     // This is the horizontal position that the y axis is drawn to
@@ -2449,9 +2688,12 @@ static void _tp_draw_axes(
         tp_f64* xticks = axes->xticks;
 
         if (num_xticks == 0 || xticks == NULL) {
+            tp_u32 desired_gap = axes->desired_xtick_gap == 0 ?
+                12 : axes->desired_xtick_gap;
+
             xticks = _tp_compute_auto_ticks(
                 temp_arena.arena, bounds.xmin, bounds.xmax,
-                graphable.w / axes->desired_xtick_gap, &num_xticks
+                graphable.w / desired_gap, &num_xticks
             );
         }
 
@@ -2508,9 +2750,12 @@ static void _tp_draw_axes(
         tp_f64* yticks = axes->yticks;
 
         if (num_yticks == 0 || yticks == NULL) {
+            tp_u32 desired_gap = axes->desired_ytick_gap == 0 ?
+                4 : axes->desired_ytick_gap;
+
             yticks = _tp_compute_auto_ticks(
                 temp_arena.arena, bounds.ymin, bounds.ymax,
-                graphable.h / axes->desired_ytick_gap, &num_yticks
+                graphable.h / desired_gap, &num_yticks
             );
         }
 
@@ -2768,27 +3013,3 @@ void tp_show_and_end(tp_figure* fig) {
 #endif
 
 #endif // TERM_PLOT_IMPLEMENTATION
-
-/*
-MIT License
-
-Copyright (c) 2026 Ian Dvorin
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/

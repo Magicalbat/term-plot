@@ -24,8 +24,6 @@ int main(void) {
         .title = TP_STR8("Example Figure"),
 
         .char_height_offset = -1,
-
-        //.raster_type = TP_RASTER_ASCII,
     });
 
     #define N 32
@@ -83,6 +81,8 @@ int main(void) {
 
             .num_xticks = ARR_LEN(xticks),
             .xticks = xticks,
+
+            .bg_col = { 25, 25, 25 },
         });
     }
 
@@ -91,35 +91,24 @@ int main(void) {
         tp_f64 off = 0;
         tp_f64 scale = 3.2e-7;
 
-        char label[255];
-
         for (u32 i = 0; i < 12; i++) {
             for (u32 j = 0; j < N; j++) {
                 x0s[j] = (tp_f64)((i * (N + 4)) + j) * scale + off;
                 y0s[j] = (tp_f64)(j);
             }
 
-            snprintf(label, sizeof(label), "line %d", i);
-
             tp_plot_lines(fig, 1, 0, &(tp_points_desc){
                 .num_points = N,
                 .xs = x0s,
                 .ys = y0s,
-
-                .label = tp_str8_from_cstr((tp_u8*)label),
             });
         }
 
         tp_setup_axes(fig, 1, 0, &(tp_axes_desc){
             .title = TP_STR8("Another one"),
 
-            .flags = TP_AXES_LEGEND,
-
             .xlabel = TP_STR8("this is the x axis"),
             .ylabel = TP_STR8("Colors"),
-
-            .xmax = scale * 12 * (N + 4) * 1.05,
-            .xmin = -scale * 24,
         });
     }
     
