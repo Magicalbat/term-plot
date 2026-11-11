@@ -40,8 +40,8 @@ void sleep_ms(u32 millis);
 #define WINDOW_SIZE 128
 #define SAMPLE_INTERVAL_S 3
 
-u32 sample_pos = 0;
 u32 total_samples = 0;
+f64 times_s[WINDOW_SIZE] = { 0 };
 f64 cpu_usages[WINDOW_SIZE] = { 0 };
 f64 mem_usages[WINDOW_SIZE] = { 0 };
 
@@ -67,28 +67,45 @@ int main(void) {
 
         resource_sample sample = get_resource_sample();
 
-        cpu_usages[sample_pos] = sample.cpu_usage;
-        mem_usages[sample_pos] = sample.mem_usage;
+        if (total_samples < WINDOW_SIZE) {
+            times_s[total_samples] = get_time_us() * 1e-6;
+            cpu_usages[total_samples] = sample.cpu_usage;
+            mem_usages[total_samples] = sample.mem_usage;
+        } else {
+            for (u32 i = 0; i < WINDOW_SIZE - 1; i++) {
+                times_s[i] = times_s[i+1];
+                cpu_usages[i] = cpu_usages[i+1];
+                mem_usages[i] = mem_usages[i+1];
+            }
 
-        sample_pos = (sample_pos + 1) % WINDOW_SIZE;
+            times_s[WINDOW_SIZE-1] = get_time_us() * 1e-6;
+            cpu_usages[WINDOW_SIZE-1] = sample.cpu_usage;
+            mem_usages[WINDOW_SIZE-1] = sample.mem_usage;
+        }
+
         total_samples++;
 
         tp_plot_lines(fig, 0, 0, &(tp_points_desc){
             .num_points = MIN(total_samples, WINDOW_SIZE),
+            .xs = times_s,
             .ys = cpu_usages,
             .label = TP_STR8("CPU Usage (percent)"),
         });
 
         tp_plot_lines(fig, 0, 0, &(tp_points_desc){
             .num_points = MIN(total_samples, WINDOW_SIZE),
+            .xs = times_s,
             .ys = mem_usages,
             .label = mem_label,
         });
 
         tp_setup_axes(fig, 0, 0, &(tp_axes_desc){
-            .flags = TP_AXES_LEGEND | TP_AXES_NO_XNUMS,
+            .flags = TP_AXES_LEGEND,
 
-            .xmin = 0, .xmax = WINDOW_SIZE,
+            .xlabel = TP_STR8("Time (s)"),
+            .ylabel = TP_STR8("Percentage"),
+
+            .xmin = times_s[0], .xmax = times_s[0] + WINDOW_SIZE,
             .ymin = 0, .ymax = 100,
         });
 

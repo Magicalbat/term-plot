@@ -607,11 +607,11 @@ extern "C" {
 #endif
 
 #ifndef TP_MEM_RESERVE_SIZE
-#   define TP_MEM_RESERVE_SIZE _TP_KiB(64)
+#   define TP_MEM_RESERVE_SIZE _TP_KiB(256)
 #endif
 
 #ifndef TP_MEM_COMMIT_SIZE
-#   define TP_MEM_COMMIT_SIZE _TP_KiB(16)
+#   define TP_MEM_COMMIT_SIZE _TP_KiB(64)
 #endif
 
 typedef struct {

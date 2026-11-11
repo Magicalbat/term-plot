@@ -25,6 +25,7 @@
     - [X] Better nan/inf handling
     - [ ] More extensive examples
         - [X] Something that updates live
+        - [ ] Something with a lot of subplots
 
 - [ ] Future plans
     - [ ] Other types of plots
