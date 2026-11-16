@@ -18,6 +18,9 @@
 
 - [ ] Full MVP (Interactive plots)
     - [ ] Console raw mode + read abstraction
+        - [X] Win32
+        - [ ] Unix
+        - [ ] Fallback error handling
     - [ ] Basic interface + focus logic
     - [ ] Panning
     - [ ] Zooming

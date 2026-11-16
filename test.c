@@ -16,6 +16,30 @@ typedef double f64;
 
 #define ARR_LEN(arr) (sizeof(arr) / sizeof(arr[0]))
 
+#if 1
+
+int main(void) {
+    _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
+    _tp_term_context* tc = _tp_term_enter_raw(arena);
+
+    printf("\x1b[?1000h");
+
+    u8 c = 0;
+    while (c != 'q') {
+        c = _tp_term_read_char();
+
+        printf("%3u: '%c'\r\n", c, c);
+    }
+
+    printf("\x1b[?1000l");
+
+    _tp_term_exit_raw(tc);
+
+    return 0;
+}
+
+#else
+
 int main(void) {
     tp_figure* fig = tp_begin(&(tp_figure_desc){
         .subplot_rows = 2,
@@ -40,11 +64,6 @@ int main(void) {
         for (u32 i = 0; i < N; i++) {
             y0s[i] = sin(x0s[i]);
         }
-
-        y0s[8] = NAN;
-        y0s[9] = INFINITY;
-        y0s[12] = -NAN;
-        y0s[13] = -INFINITY;
 
         tp_plot_lines(fig, 0, 0, &(tp_points_desc){
             .num_points = N,
@@ -121,4 +140,5 @@ int main(void) {
 
     return 0;
 }
+#endif
 

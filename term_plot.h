@@ -656,24 +656,52 @@ static tp_u32 _tp_clz_u64(tp_u64 n) {
 #endif
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Forward declarations
+// 
+////////////////////////////////////////////////////////////////////////////////
 
-////////////////////////////////////////////////////////////////////////////////
-// 
-// Platform dependent functionality
-// 
-////////////////////////////////////////////////////////////////////////////////
+typedef struct _tp_arena _tp_arena;
+typedef struct _tp_term_context _tp_term_context;
+
+typedef struct {
+    _tp_arena* arena;
+    tp_u64 start_pos;
+} _tp_arena_temp;
+
+#define _TP_PUSH_STRUCT(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_FALSE)
+#define _TP_PUSH_STRUCT_NZ(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_TRUE)
+#define _TP_PUSH_ARRAY(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (tp_u64)(n), _TP_FALSE)
+#define _TP_PUSH_ARRAY_NZ(arena, T, n) (T*)_tp_arena_push((arena), sizeof(T) * (tp_u64)(n), _TP_TRUE)
+
+static _tp_arena* _tp_arena_create(tp_u64 reserve_size, tp_u64 commit_size);
+static void _tp_arena_destroy(_tp_arena* arena);
+static tp_u64 _tp_arena_get_pos(_tp_arena* arena);
+static void* _tp_arena_push(_tp_arena* arena, tp_u64 size, tp_b32 non_zero);
+static void _tp_arena_pop_to(_tp_arena* arena, tp_u64 pos);
+static void _tp_arena_clear(_tp_arena* arena);
+static _tp_arena_temp _tp_arena_temp_begin(_tp_arena* arena);
+static void _tp_arena_temp_end(_tp_arena_temp temp);
 
 static void* _tp_mem_reserve(tp_u64 size);
 static tp_b32 _tp_mem_commit(void* mem, tp_u64 size);
 static tp_b32 _tp_mem_release(void* mem, tp_u64 size);
 static tp_u32 _tp_page_size(void);
 
-static _tp_dim_u32 _tp_get_termsize(void);
-
 static _tp_dim_u32 _tp_def_termsize = { .width = 80, .height = 24 };
 
-// Writes the string to stdout
+static _tp_dim_u32 _tp_get_termsize(void);
+static tp_u8 _tp_term_read_char(void);
 static void _tp_term_write(tp_string8 str);
+static _tp_term_context* _tp_term_enter_raw(_tp_arena* arena);
+static void _tp_term_exit_raw(_tp_term_context* context);
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Platform dependent functionality
+// 
+////////////////////////////////////////////////////////////////////////////////
 
 #if defined(_TP_PLAT_WIN32)
 
@@ -687,26 +715,26 @@ void tp_enable_utf8_output(void) {
     SetConsoleOutputCP(CP_UTF8);
 }
 
-void* _tp_mem_reserve(tp_u64 size) {
+static void* _tp_mem_reserve(tp_u64 size) {
     return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_READWRITE);
 }
 
-tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
+static tp_b32 _tp_mem_commit(void* mem, tp_u64 size) {
     void* ret = VirtualAlloc(mem, size, MEM_COMMIT, PAGE_READWRITE);
     return ret != NULL;
 }
 
-tp_b32 _tp_mem_release(void* mem, tp_u64 size) {
+static tp_b32 _tp_mem_release(void* mem, tp_u64 size) {
     return VirtualFree(mem, size, MEM_RELEASE);
 }
 
-tp_u32 _tp_page_size(void) {
+static tp_u32 _tp_page_size(void) {
     SYSTEM_INFO si = { 0 };
     GetSystemInfo(&si);
     return si.dwPageSize;
 }
 
-_tp_dim_u32 _tp_get_termsize(void) {
+static _tp_dim_u32 _tp_get_termsize(void) {
     CONSOLE_SCREEN_BUFFER_INFO console_info = { 0 };
     HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -732,7 +760,18 @@ _tp_dim_u32 _tp_get_termsize(void) {
     };
 }
 
-void _tp_term_write(tp_string8 str) {
+static tp_u8 _tp_term_read_char(void) {
+    HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+
+    DWORD num_read = 0;
+    tp_u8 out = 0;
+
+    ReadFile(stdin_handle, &out, 1, &num_read, NULL);
+
+    return out;
+}
+
+static void _tp_term_write(tp_string8 str) {
     HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 
     tp_u64 total_written = 0;
@@ -748,6 +787,46 @@ void _tp_term_write(tp_string8 str) {
 
         total_written += written;
     }
+}
+
+typedef struct _tp_term_context {
+    DWORD orig_mode;
+} _tp_term_context;
+
+static _tp_term_context* _tp_term_enter_raw(_tp_arena* arena) {
+    HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+
+    DWORD orig_mode = 0;
+    if (!GetConsoleMode(stdin_handle, &orig_mode)) {
+        goto fail;
+    }
+
+    DWORD new_mode =
+        ENABLE_WINDOW_INPUT |
+        ENABLE_VIRTUAL_TERMINAL_INPUT |
+        ENABLE_PROCESSED_INPUT;
+
+    if (!SetConsoleMode(stdin_handle, new_mode)) {
+        goto fail;
+    }
+
+    _tp_term_context* context = _TP_PUSH_STRUCT_NZ(arena, _tp_term_context);
+
+    *context = (_tp_term_context){
+        .orig_mode = orig_mode,
+    };
+
+    return context;
+
+fail:
+    return NULL;
+}
+
+static void _tp_term_exit_raw(_tp_term_context* context) {
+    if (context == NULL) { return; }
+
+    HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+    SetConsoleMode(stdin_handle, context->orig_mode);
 }
 
 #elif defined(_TP_PLAT_UNIX)
@@ -885,11 +964,6 @@ typedef struct _tp_arena {
     tp_u64 pos;
     tp_u64 commit_pos;
 } _tp_arena;
-
-typedef struct {
-    _tp_arena* arena;
-    tp_u64 start_pos;
-} _tp_arena_temp;
 
 #define _TP_PUSH_STRUCT(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_FALSE)
 #define _TP_PUSH_STRUCT_NZ(arena, T) (T*)_tp_arena_push((arena), sizeof(T), _TP_TRUE)
