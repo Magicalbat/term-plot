@@ -22,6 +22,8 @@
         - [ ] Unix
         - [ ] Fallback error handling
     - [ ] Basic interface + focus logic
+        - [X] Initial structure and draw loop
+        - [ ] Interactive draw context and initial UI drawing
     - [ ] Panning
     - [ ] Zooming
     - [ ] Reset view + undo/redo

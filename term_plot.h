@@ -2002,6 +2002,8 @@ typedef struct {
     tp_u64* col_bitmask;
 } _tp_draw_target;
 
+static void _tp_draw_target_clear(_tp_draw_target* dt);
+
 static _tp_draw_target _tp_draw_target_create(
     _tp_arena* arena, _tp_dim_u32 dim
 ) {
@@ -2014,22 +2016,30 @@ static _tp_draw_target _tp_draw_target_create(
         .codepoints = _TP_PUSH_ARRAY_NZ(arena, tp_u32, size),
         .fg_cols = _TP_PUSH_ARRAY_NZ(arena, tp_rgb8, size),
         .bg_cols = _TP_PUSH_ARRAY_NZ(arena, tp_rgb8, size),
-        .col_bitmask = _TP_PUSH_ARRAY(arena, tp_u64, (size + 63) / 64),
+        .col_bitmask = _TP_PUSH_ARRAY_NZ(arena, tp_u64, (size + 63) / 64),
     };
 
-    for (tp_u32 i = 0; i < size; i++) {
-        out.codepoints[i] = (tp_u32)' ';
-    }
-
-    for (tp_u32 i = 0; i < size; i++) {
-        out.fg_cols[i] = (tp_rgb8){ 255, 255, 255 };
-    }
-
-    for (tp_u32 i = 0; i < size; i++) {
-        out.bg_cols[i] = (tp_rgb8){ 0, 0, 0 };
-    }
-
+    _tp_draw_target_clear(&out);
+    
     return out;
+}
+
+static void _tp_draw_target_clear(_tp_draw_target* dt) {
+    tp_u32 size = dt->width * dt->height;
+
+    for (tp_u32 i = 0; i < size; i++) {
+        dt->codepoints[i] = (tp_u32)' ';
+    }
+
+    for (tp_u32 i = 0; i < size; i++) {
+        dt->fg_cols[i] = (tp_rgb8){ 255, 255, 255 };
+    }
+
+    for (tp_u32 i = 0; i < size; i++) {
+        dt->bg_cols[i] = (tp_rgb8){ 0, 0, 0 };
+    }
+
+    memset(dt->col_bitmask, 0, sizeof(tp_u64) * ((size + 63) / 64));
 }
 
 // Returns the number of bytes it would take to encode the draw target
@@ -2635,7 +2645,7 @@ static void _tp_draw_vcenter_text(
     }
 }
 
-static _tp_dim_u32 _tp_size_figure(tp_figure* fig, tp_b32 clamp_to_term) {
+static _tp_dim_u32 _tp_calc_draw_size(tp_figure* fig, tp_b32 clamp_to_term) {
     _tp_dim_u32 fig_size = { fig->char_width, fig->char_height };
     _tp_dim_u32 term_size = _tp_get_termsize();
 
@@ -3079,7 +3089,7 @@ tp_string8 tp_render_utf8(
 
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
 
-    _tp_dim_u32 fig_size = _tp_size_figure(fig, _TP_FALSE);
+    _tp_dim_u32 fig_size = _tp_calc_draw_size(fig, _TP_FALSE);
     _tp_rect_u32 draw_area = {
         .w = fig_size.width,
         .h = fig_size.height,
@@ -3134,7 +3144,7 @@ end:
 void tp_show(tp_figure* fig, tp_b32 trailing_newline) {
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
 
-    _tp_dim_u32 fig_size = _tp_size_figure(fig, _TP_FALSE);
+    _tp_dim_u32 fig_size = _tp_calc_draw_size(fig, _TP_FALSE);
     _tp_rect_u32 draw_area = {
         .w = fig_size.width,
         .h = fig_size.height,
@@ -3204,6 +3214,8 @@ void tp_show_interactive(tp_figure* fig) {
 
 #else 
 
+#define _TP_INTERACT_UI_ROWS 2
+
 void tp_show_interactive(tp_figure* fig) {
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
 
@@ -3213,24 +3225,126 @@ void tp_show_interactive(tp_figure* fig) {
     _tp_timing_init();
     _tp_term_context* term = _tp_term_enter_raw(temp_arena.arena);
 
+    if (term == NULL) {
+        TP_WARN(
+            "[term-plot Warning] "
+            "Unable to put terminal into raw mode, aborting interactive show"
+        );
+
+        goto end;
+    }
+
+    tp_enable_utf8_output();
+    _tp_term_write(TP_STR8("\x1b[?1049h\x1b[?25l"));
+
+    // This arena is cleared when the figure's rendered size changes
+    _tp_arena_temp termsize_arena = _tp_arena_temp_begin(fig->arena);
+    _tp_dim_u32 draw_size = { 0 };
+    _tp_rect_u32 fig_draw_area = { 0 };
+    _tp_rect_u32 ui_draw_area = { 0 };
+    _tp_draw_target draw_target = { 0 };
+    _tp_fig_layout layout = { 0 };
+    tp_b32 layout_valid = _TP_FALSE;
+
     tp_b32 running = _TP_TRUE;
     while (running) {
         tp_u64 loop_start = _tp_time_us();
+        tp_b32 should_draw = _TP_FALSE;
 
         tp_u8 c = 0;
         while ((c = _tp_term_read_char()) != 0) {
             if (c == 'q') { running = _TP_FALSE; }
         }
 
-        _tp_term_write(TP_STR8("Hello there\n"));
+        // Recreating draw target and redoing figure layout if the figure size
+        // has changed
+        _tp_dim_u32 cur_draw_size = _tp_calc_draw_size(fig, _TP_TRUE);
+        if (
+            cur_draw_size.width != draw_size.width ||
+            cur_draw_size.height != draw_size.height
+        ) {
+            should_draw = _TP_TRUE;
 
+            _tp_arena_temp_end(termsize_arena);
+
+            draw_size = cur_draw_size;
+
+            if (draw_size.height < _TP_INTERACT_UI_ROWS) {
+                fig_draw_area = (_tp_rect_u32){ 0 };
+                ui_draw_area = (_tp_rect_u32){ 0 };
+            } else {
+                fig_draw_area = (_tp_rect_u32){
+                    .w = draw_size.width,
+                    .h = draw_size.height - _TP_INTERACT_UI_ROWS,
+                };
+
+                ui_draw_area = (_tp_rect_u32){
+                    .w = draw_size.width,
+                    .h = _TP_INTERACT_UI_ROWS,
+                    .y = fig_draw_area.h,
+                };
+            }
+
+            draw_target = _tp_draw_target_create(
+                termsize_arena.arena, draw_size
+            );
+
+            layout_valid = _tp_layout_axes(fig, &layout, fig_draw_area);
+        }
+
+        if (!should_draw) { goto loop_end; }
+
+        if (layout_valid) {
+            _tp_draw_target_clear(&draw_target);
+
+            _tp_draw_figure(
+                fig, &draw_target, &layout, &draw_context, fig_draw_area
+            );
+
+            tp_u64 rendered_size = _tp_draw_target_encode_size(
+                &draw_target, TP_NEWLINE_CRLF,
+                _TP_FALSE, !fig->monochrome
+            );
+
+            _tp_arena_temp render_arena = _tp_arena_temp_begin(fig->arena);
+
+            tp_string8 rendered = {
+                .size = rendered_size,
+                .str = _TP_PUSH_ARRAY_NZ(
+                    render_arena.arena, tp_u8, rendered_size
+                ),
+            };
+
+            _tp_draw_target_encode(
+                &draw_target, TP_NEWLINE_CRLF, _TP_FALSE,
+                !fig->monochrome, rendered.str
+            );
+
+            _tp_term_write(TP_STR8("\x1b[H"));
+            _tp_term_write(rendered);
+
+            _tp_arena_temp_end(render_arena);
+        } else {
+            // Invalid layout
+            _tp_term_write(TP_STR8(
+                "\x1b[2J\x1b[H"
+                "Unable to layout figure, terminal size is too small"
+            ));
+        }
+
+loop_end:
         tp_u64 loop_time = _tp_time_us() - loop_start;
         if (loop_time < TP_LOOP_TIME_MS * 1000) {
             _tp_sleep_ms(TP_LOOP_TIME_MS - (tp_u32)(loop_time / 1000));
         }
     }
 
-    _tp_term_exit_raw(term);
+end:
+    if (term) {
+        _tp_term_write(TP_STR8("\x1b[?1049l\x1b[?25h"));
+        _tp_term_exit_raw(term);
+    }
+
     _tp_arena_temp_end(temp_arena);
 }
 

@@ -19,32 +19,29 @@ typedef double f64;
 int main(void) {
     tp_figure* fig = tp_begin(&(tp_figure_desc){
         .subplot_rows = 2,
-        .subplot_cols = 1,
+        .subplot_cols = 2,
 
         .title = TP_STR8("Example Figure"),
 
         .char_height_offset = -1,
     });
 
-    #define N 32
+    #define N 64
 
-    f64 x0s[N] = { 0 };
-    f64 y0s[N] = { 0 };
+    f64 xs[N] = { 0 };
+    f64 ys[N] = { 0 };
 
-    // Top subplot
+    // Top left subplot
     {
         for (u32 i = 0; i < N; i++) {
-            x0s[i] = ((f64)i / (N-1)) * 2.0 * PI;
-        }
-
-        for (u32 i = 0; i < N; i++) {
-            y0s[i] = sin(x0s[i]);
+            xs[i] = ((f64)i / (N-1)) * 2.0 * PI;
+            ys[i] = sin(xs[i]);
         }
 
         tp_plot_lines(fig, 0, 0, &(tp_points_desc){
             .num_points = N,
-            .xs = x0s,
-            .ys = y0s,
+            .xs = xs,
+            .ys = ys,
 
             .col = { 0, 255, 0 },
 
@@ -52,13 +49,13 @@ int main(void) {
         });
 
         for (u32 i = 0; i < N; i++) {
-            y0s[i] = cos(x0s[i]);
+            ys[i] = cos(xs[i]);
         }
 
         tp_plot_scatter(fig, 0, 0, &(tp_points_desc){
             .num_points = N,
-            .xs = x0s,
-            .ys = y0s,
+            .xs = xs,
+            .ys = ys,
 
             .label = TP_STR8("cos"),
         });
@@ -86,21 +83,21 @@ int main(void) {
         });
     }
 
-    // Bottom subplot
+    // Bottom left subplot
     {
         tp_f64 off = 0;
         tp_f64 scale = 3.2e-7;
 
         for (u32 i = 0; i < 12; i++) {
             for (u32 j = 0; j < N; j++) {
-                x0s[j] = (tp_f64)((i * (N + 4)) + j) * scale + off;
-                y0s[j] = (tp_f64)(j);
+                xs[j] = (tp_f64)((i * (N + 4)) + j) * scale + off;
+                ys[j] = (tp_f64)(j);
             }
 
             tp_plot_lines(fig, 1, 0, &(tp_points_desc){
                 .num_points = N,
-                .xs = x0s,
-                .ys = y0s,
+                .xs = xs,
+                .ys = ys,
             });
         }
 
@@ -109,6 +106,62 @@ int main(void) {
 
             .xlabel = TP_STR8("this is the x axis"),
             .ylabel = TP_STR8("Colors"),
+        });
+    }
+
+    // Top right subplot
+    {
+        for (u32 i = 0; i < N; i++) {
+            xs[i] = (f64)i * (1 + (f64)rand() / (f64)RAND_MAX);
+            ys[i] = (f64)i * (1 + (f64)rand() / (f64)RAND_MAX);
+        }
+
+        tp_plot_scatter(fig, 0, 1, &(tp_points_desc){
+            .num_points = N,
+            .xs = xs,
+            .ys = ys,
+        });
+    }
+    
+    // Bottom right subplot
+    {
+        for (u32 i = 0; i < N; i++) {
+            xs[i] = ((f64)i / (N-1)) * 2.0 * PI - PI;
+            ys[i] = sinh(xs[i]);
+        }
+
+        tp_plot_lines(fig, 1, 1, &(tp_points_desc){
+            .num_points = N,
+            .xs = xs,
+            .ys = ys,
+            .label = TP_STR8("sinh"),
+        });
+
+        for (u32 i = 0; i < N; i++) {
+            ys[i] = cosh(xs[i]);
+        }
+
+        tp_plot_lines(fig, 1, 1, &(tp_points_desc){
+            .num_points = N,
+            .xs = xs,
+            .ys = ys,
+            .label = TP_STR8("cosh"),
+        });
+
+        for (u32 i = 0; i < N; i++) {
+            ys[i] = tanh(xs[i]);
+        }
+
+        tp_plot_lines(fig, 1, 1, &(tp_points_desc){
+            .num_points = N,
+            .xs = xs,
+            .ys = ys,
+            .label = TP_STR8("tanh"),
+        });
+
+        tp_setup_axes(fig, 1, 1, &(tp_axes_desc){
+            .title = TP_STR8("Hyperbolic trig"),
+            .flags = TP_AXES_LEGEND,
         });
     }
     
