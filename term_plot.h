@@ -17,6 +17,8 @@
         numbers (defaults to 7)
     TP_MEM_RESERVE_SIZE - Number of bytes figures reserve initially
     TP_MEM_COMMIT_SIZE - Number of bytes figures will commit memory by
+    TP_LOOP_TIME_MS - Number of milliseconds between iterations of interactively
+        displaying a plot. Think of it like frametime, but for the console
 
     If you would like to avoid `stdio.h` entirely, you must do the following:
         - Define `TP_FATAL_ERROR`
@@ -64,7 +66,7 @@
         can pass in the default `tp_fig_desc`.
     3) Optionally call `tp_setup_axes` to configure any axes
     2) Issue any number of `tp_plot_*` commands
-    3) Call `tp_show_and_end(...)` to display and destroy the figure
+    3) Call `tp_show_interactive_and_end(...)` to display and destroy the figure
 
 
     NOTE ON MEMORY
@@ -180,24 +182,28 @@
 
     VIEWING THE FIGURE
     ------------------
-    There are two primary ways to render the figure: you can get a UTF-8 stream
-    of the graph, or you can directly display the graph in the terminal.
+    There are two primary ways to render the figure: you can directly display
+    the graph in the terminal, or you can get a UTF-8 stream of the graph.
 
-    `tp_render_utf8(...)` does the former of these two. You can also specify an
-    allocator to use for the resulting string as well as a newline style (this
-    is more for terminals in raw mode than supporting MS-DOS). If `monochrome`
-    is false in the figure, the resulting UTF-8 stream will have ANSI escape
-    color codes in it. If you plan to display this stream to the console, it is
-    a good idea to first call `tp_enable_utf8_output()`. On Linux, I think that
-    terminals are generally UTF-8 by default nowadays, but Windows in its 
-    infinite wisdom still uses extended ASCII by default, and you need to 
-    explicitly enable UTF-8 output for the console. 
+    `tp_show(...)`, `tp_show_interactive(...)` (plus their variants
+    `tp_show_and_end()`, and `tp_show_interactive_and_end(...)`) are the 
+    primary ways to display figures. Both versions of these functions will 
+    display the figure to the version. The interactive variants will also take
+    control of the terminal window, allowing you to pan and zoom in on each of 
+    the subplots. As you might expect, the _end variants of the functions 
+    simply show the graph as requested then call `tp_end(...)` on the given 
+    figure, for convenience.
 
-    `tp_show(...)` (and `tp_show_and_end(...)`) are the primary functions for
-    actually displaying the graph. They simply display the graph to the 
-    terminal. I have plans in the future for adding an interactive mode to 
-    these functions that lets you pan and zoom in the graphs, but I have not
-    gotten around to that yet. 
+    `tp_render_utf8(...)`, as you might expect, renders a UTF-8 stream of the
+    graph. You can also specify an allocator to use for the resulting string as
+    well as a newline style (this is more for terminals in raw mode than
+    supporting MS-DOS). If `monochrome` is false in the figure, the resulting
+    UTF-8 stream will have ANSI escape color codes in it. If you plan to display
+    this stream to the console, it is a good idea to first call
+    `tp_enable_utf8_output()`. On Linux, I think that terminals are generally
+    UTF-8 by default nowadays, but Windows in its infinite wisdom still uses
+    extended ASCII by default, and you need to explicitly enable UTF-8 output
+    for the console. 
 
 
     LICENSE
@@ -524,9 +530,20 @@ tp_string8 tp_render_utf8(
 // Prints out the current graph to standard out
 void tp_show(tp_figure* fig, tp_b32 trailing_newline);
 
+// Takes control of the current terminal to show an interactive version of the
+// figure, allowing the user to pan and zoom in on specific subplots
+//
+// Some of the functionality required here is platform dependent, so it will 
+// not work on an unknown platform
+void tp_show_interactive(tp_figure* fig);
+
 // This is the same as `tp_show` followed by `tp_end`
 // Shows the figure and deletes it when done
 void tp_show_and_end(tp_figure* fig, tp_b32 trailing_newline);
+
+// This is the same as `tp_show_interactive` followed by `tp_end`
+// Shows the figure interactively and deletes it when done
+void tp_show_interactive_and_end(tp_figure* fig);
 
 #ifdef __cplusplus
 }
@@ -614,6 +631,10 @@ extern "C" {
 #   define TP_MEM_COMMIT_SIZE _TP_KiB(64)
 #endif
 
+#ifndef TP_LOOP_TIME_MS
+#   define TP_LOOP_TIME_MS 30
+#endif
+
 typedef struct {
     tp_u32 width, height;
 } _tp_dim_u32;
@@ -691,11 +712,18 @@ static tp_u32 _tp_page_size(void);
 
 static _tp_dim_u32 _tp_def_termsize = { .width = 80, .height = 24 };
 
+// These are used for non-interactive show, with platform independent 
+// implementations
 static _tp_dim_u32 _tp_get_termsize(void);
-static tp_u8 _tp_term_read_char(void);
 static void _tp_term_write(tp_string8 str);
+
+// These are use for interactive show, platform dependent
+static tp_u8 _tp_term_read_char(void);
 static _tp_term_context* _tp_term_enter_raw(_tp_arena* arena);
 static void _tp_term_exit_raw(_tp_term_context* context);
+static void _tp_sleep_ms(tp_u32 ms);
+static void _tp_timing_init(void);
+static tp_u64 _tp_time_us(void);
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
@@ -760,17 +788,6 @@ static _tp_dim_u32 _tp_get_termsize(void) {
     };
 }
 
-static tp_u8 _tp_term_read_char(void) {
-    HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
-
-    DWORD num_read = 0;
-    tp_u8 out = 0;
-
-    ReadFile(stdin_handle, &out, 1, &num_read, NULL);
-
-    return out;
-}
-
 static void _tp_term_write(tp_string8 str) {
     HANDLE stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -787,6 +804,34 @@ static void _tp_term_write(tp_string8 str) {
 
         total_written += written;
     }
+}
+
+static tp_u8 _tp_term_read_char(void) {
+    HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
+
+    DWORD num_events = 0;
+    if (
+        GetNumberOfConsoleInputEvents(stdin_handle, &num_events) == 0 ||
+        num_events == 0
+    ) {
+        return 0;
+    }
+
+    INPUT_RECORD record = { 0 };
+    DWORD num_read = 0;
+
+    if (
+        ReadConsoleInputW(stdin_handle, &record, 1, &num_read) == 0 ||
+        num_read == 0
+    ) {
+        return 0;
+    }
+
+    if (record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown) {
+        return (tp_u8)record.Event.KeyEvent.uChar.AsciiChar;
+    }
+
+    return 0;
 }
 
 typedef struct _tp_term_context {
@@ -827,6 +872,28 @@ static void _tp_term_exit_raw(_tp_term_context* context) {
 
     HANDLE stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
     SetConsoleMode(stdin_handle, context->orig_mode);
+}
+
+static void _tp_sleep_ms(tp_u32 ms) {
+    Sleep(ms);
+}
+
+static tp_u64 _w32_perf_freq = 1;
+
+static void _tp_timing_init(void) {
+    LARGE_INTEGER freq = { 0 };
+    QueryPerformanceFrequency(&freq);
+
+    if (freq.QuadPart > 0) {
+        _w32_perf_freq = (tp_u64)freq.QuadPart;
+    }
+}
+
+static tp_u64 _tp_time_us(void) {
+    LARGE_INTEGER count = { 0 };
+    QueryPerformanceCounter(&count);
+
+    return (tp_u64)count.QuadPart * 1000000 / _w32_perf_freq;
 }
 
 #elif defined(_TP_PLAT_UNIX)
@@ -2999,7 +3066,7 @@ static void _tp_draw_figure(
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// User facing drawing functions
+// Static rendering functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -3115,6 +3182,62 @@ end:
 
 void tp_show_and_end(tp_figure* fig, tp_b32 trailing_newline) {
     tp_show(fig, trailing_newline);
+    tp_end(fig);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Interactive rendering functions
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+#if defined(_TP_PLAT_UNKNOWN)
+
+void tp_show_interactive(tp_figure* fig) {
+    (void)fig;
+
+    TP_WARN(
+        "[term-plot Warning] "
+        "Unable to show figure interactively, unknown platform"
+    );
+}
+
+#else 
+
+void tp_show_interactive(tp_figure* fig) {
+    _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
+
+    _tp_draw_context draw_context = { 0 };
+    _tp_draw_context_init(fig, &draw_context);
+    
+    _tp_timing_init();
+    _tp_term_context* term = _tp_term_enter_raw(temp_arena.arena);
+
+    tp_b32 running = _TP_TRUE;
+    while (running) {
+        tp_u64 loop_start = _tp_time_us();
+
+        tp_u8 c = 0;
+        while ((c = _tp_term_read_char()) != 0) {
+            if (c == 'q') { running = _TP_FALSE; }
+        }
+
+        _tp_term_write(TP_STR8("Hello there\n"));
+
+        tp_u64 loop_time = _tp_time_us() - loop_start;
+        if (loop_time < TP_LOOP_TIME_MS * 1000) {
+            _tp_sleep_ms(TP_LOOP_TIME_MS - (tp_u32)(loop_time / 1000));
+        }
+    }
+
+    _tp_term_exit_raw(term);
+    _tp_arena_temp_end(temp_arena);
+}
+
+#endif 
+
+void tp_show_interactive_and_end(tp_figure* fig) {
+    tp_show_interactive(fig);
     tp_end(fig);
 }
 

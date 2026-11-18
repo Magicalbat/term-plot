@@ -17,7 +17,7 @@
     - [X] Make all the internal stuff static (oops)
 
 - [ ] Full MVP (Interactive plots)
-    - [ ] Console raw mode + read abstraction
+    - [ ] Console raw mode + read + timing abstraction
         - [X] Win32
         - [ ] Unix
         - [ ] Fallback error handling

@@ -72,7 +72,9 @@ figures with `tp_begin(...)`, reset figures with `tp_reset(...)`, and destroy
 figures with `tp_end(...)` or `tp_show_and_end(...)`. Each set of axes can be 
 configured using `tp_setup_axes(...)`. You issue plotting commands to an
 individual set of axes, using one of the `tp_plot_*(...)` functions. To view 
-the output, simply call `tp_show(...)` or `tp_show_and_end(...)`.
+the output, simply call one of the `tp_show*(...)` functions. You can show the
+figure statically or interactively. There are also variants that show the graph
+and end the figure to make clean up more convenient.
 
 You can also get a UTF-8 stream for the figure by calling `tp_render_utf8(...)`. 
 It is worth noting however that 1) non-monochrome figures will have ANSI escape 
