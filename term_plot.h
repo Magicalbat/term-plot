@@ -3197,7 +3197,7 @@ void tp_show_and_end(tp_figure* fig, tp_b32 trailing_newline) {
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
-// Interactive rendering functions
+// Interactive functions
 // 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -3215,6 +3215,239 @@ void tp_show_interactive(tp_figure* fig) {
 #else 
 
 #define _TP_INTERACT_UI_ROWS 2
+
+typedef enum {
+    _TP_EVENT_NONE = 0,
+    _TP_EVENT_UNKNOWN,
+
+    // In the TUI, multiple different keys can map to the same action, so I am 
+    // just processing directly from stdin keys --> actions rather than having
+    // two separate passes
+    _TP_EVENT_KEY_ACTION,
+
+    _TP_EVENT_MOUSE_DOWN,
+    _TP_EVENT_MOUSE_MOVE,
+    _TP_EVENT_MOUSE_UP,
+    _TP_EVENT_MOUSE_SCROLL,
+} _tp_event_kind;
+
+#define _TP_KEY_ACTION_XLIST \
+    X(NONE) \
+    X(QUIT) \
+    X(HELP) \
+    X(CONFIRM) \
+    X(CANCEL) \
+    X(UP) \
+    X(DOWN) \
+    X(LEFT) \
+    X(RIGHT) \
+    X(HARD_UP) \
+    X(HARD_DOWN) \
+    X(HARD_LEFT) \
+    X(HARD_RIGHT) \
+    X(PAN_MODE) \
+    X(ZOOM_IN) \
+    X(ZOOM_OUT) \
+    X(ZOOM_MODE) \
+    X(RESET_VIEW)
+
+typedef enum {
+#define X(action) _TP_KEY_ACTION_##action, 
+    _TP_KEY_ACTION_XLIST
+#undef X
+} _tp_key_action;
+
+typedef struct {
+    _tp_event_kind kind;
+    _tp_key_action key_action;
+
+    tp_u32 mouse_x;
+    tp_u32 mouse_y;
+
+    // This is literally the Cb button/modifer code as defined by the xterm 
+    // mouse protocol
+    //
+    // In short, the low two bits encode left middle and right as 0, 1, and 2
+    // respectively. Modifiers add +4, +8, +16, and +32. Scrolling adds +64 
+    // for up and +65 for down
+    tp_u8 mb_bits;
+} _tp_event;
+
+tp_b32 _tp_next_event(_tp_event* event) {
+    tp_u8 c = _tp_term_read_char();
+
+    if (c == 0) {
+        *event = (_tp_event){ 0 };
+        return _TP_FALSE;
+    }
+
+    if (c != 0x1b) {
+        *event = (_tp_event){
+            .kind = _TP_EVENT_KEY_ACTION,
+        };
+
+        switch (c) {
+            case 'q':
+                event->key_action = _TP_KEY_ACTION_QUIT;
+                break;
+
+            case '?':
+                event->key_action = _TP_KEY_ACTION_HELP;
+                break;
+
+            case '\r':
+                event->key_action = _TP_KEY_ACTION_CONFIRM;
+                break;
+
+            case 'h':
+                event->key_action = _TP_KEY_ACTION_LEFT;
+                break;
+            case 'j':
+                event->key_action = _TP_KEY_ACTION_DOWN;
+                break;
+            case 'k':
+                event->key_action = _TP_KEY_ACTION_UP;
+                break;
+            case 'l':
+                event->key_action = _TP_KEY_ACTION_RIGHT;
+                break;
+
+            case 'H':
+                event->key_action = _TP_KEY_ACTION_HARD_LEFT;
+                break;
+            case 'J':
+                event->key_action = _TP_KEY_ACTION_HARD_DOWN;
+                break;
+            case 'K':
+                event->key_action = _TP_KEY_ACTION_HARD_UP;
+                break;
+            case 'L':
+                event->key_action = _TP_KEY_ACTION_HARD_RIGHT;
+                break;
+
+            case 'p':
+                event->key_action = _TP_KEY_ACTION_PAN_MODE;
+                break;
+
+            case 'i':
+                event->key_action = _TP_KEY_ACTION_ZOOM_IN;
+                break;
+            case 'o':
+                event->key_action = _TP_KEY_ACTION_ZOOM_OUT;
+                break;
+            case 'z':
+                event->key_action = _TP_KEY_ACTION_ZOOM_MODE;
+                break;
+
+            case 'r':
+                event->key_action = _TP_KEY_ACTION_RESET_VIEW;
+                break;
+
+            default:
+                event->kind = _TP_EVENT_UNKNOWN;
+                break;
+        }
+
+        return _TP_TRUE;
+    }
+
+    // Here, the first c is 0x1b
+    // Everything beyond this point is some kind of escape code
+    c = _tp_term_read_char();
+
+    if (c == 0) {
+        *event = (_tp_event){
+            .kind = _TP_EVENT_KEY_ACTION,
+            .key_action = _TP_KEY_ACTION_CANCEL,
+        };
+
+        return _TP_TRUE;
+    }
+
+    if (c != '[') { goto unknown; }
+
+    // Here, we are definitely in an escape code and have read "\x1b["
+    c = _tp_term_read_char();
+
+    tp_b8 ctrl_arrow = _TP_FALSE, mouse = _TP_FALSE;
+
+    switch (c) {
+        case 'A': 
+            *event = (_tp_event){
+                .kind = _TP_EVENT_KEY_ACTION,
+                .key_action = _TP_KEY_ACTION_UP,
+            };
+            return _TP_TRUE;
+
+        case 'B': 
+            *event = (_tp_event){
+                .kind = _TP_EVENT_KEY_ACTION,
+                .key_action = _TP_KEY_ACTION_DOWN,
+            };
+            return _TP_TRUE;
+
+        case 'C': 
+            *event = (_tp_event){
+                .kind = _TP_EVENT_KEY_ACTION,
+                .key_action = _TP_KEY_ACTION_RIGHT,
+            };
+            return _TP_TRUE;
+
+        case 'D': 
+            *event = (_tp_event){
+                .kind = _TP_EVENT_KEY_ACTION,
+                .key_action = _TP_KEY_ACTION_LEFT,
+            };
+            return _TP_TRUE;
+
+        case '1':
+            ctrl_arrow = _TP_TRUE;
+            break;
+
+        case '<':
+            mouse = _TP_TRUE;
+            break;
+
+        default: 
+            goto unknown;
+    }
+
+    if (ctrl_arrow) {
+        if (_tp_term_read_char() != ';') { goto unknown; }
+        if (_tp_term_read_char() != '5') { goto unknown; }
+
+        c = _tp_term_read_char();
+        *event = (_tp_event){
+            .kind = _TP_EVENT_KEY_ACTION,
+        };
+
+        switch (c) {
+            case 'A':
+                event->key_action = _TP_KEY_ACTION_HARD_UP;
+                break;
+            case 'B':
+                event->key_action = _TP_KEY_ACTION_HARD_DOWN;
+                break;
+            case 'C':
+                event->key_action = _TP_KEY_ACTION_HARD_RIGHT;
+                break;
+            case 'D':
+                event->key_action = _TP_KEY_ACTION_HARD_LEFT;
+                break;
+
+            default:
+                goto unknown;
+        }
+
+        return _TP_TRUE;
+    }
+
+unknown:
+    *event = (_tp_event){
+        .kind = _TP_EVENT_UNKNOWN,
+    };
+    return _TP_TRUE;
+}
 
 void tp_show_interactive(tp_figure* fig) {
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
@@ -3251,9 +3484,14 @@ void tp_show_interactive(tp_figure* fig) {
         tp_u64 loop_start = _tp_time_us();
         tp_b32 should_draw = _TP_FALSE;
 
-        tp_u8 c = 0;
-        while ((c = _tp_term_read_char()) != 0) {
-            if (c == 'q') { running = _TP_FALSE; }
+        _tp_event event = { 0 };
+        while (_tp_next_event(&event)) {
+            if (
+                event.kind == _TP_EVENT_KEY_ACTION &&
+                event.key_action == _TP_KEY_ACTION_QUIT
+            ) {
+                running = _TP_FALSE;
+            }
         }
 
         // Recreating draw target and redoing figure layout if the figure size

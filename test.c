@@ -16,14 +16,77 @@ typedef double f64;
 
 #define ARR_LEN(arr) (sizeof(arr) / sizeof(arr[0]))
 
+#if 0
+
+static const char* key_action_names[] = {
+#define X(action) #action,
+    _TP_KEY_ACTION_XLIST
+#undef X
+};
+
+int main(void) {
+    _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
+    _tp_term_context* tc = _tp_term_enter_raw(arena);
+
+    printf("\x1b[?1000h\x1b[?1006h");
+
+    bool running = true;
+    while (running) {
+#if 0
+        tp_u8 c = 0;
+        while ((c = _tp_term_read_char()) != 0) {
+            if (c == 'q') running = false;
+
+            printf("%3u: '%c'\r\n", c, c >= 32 && c <= 126 ? c : '?');
+        }
+
+#else
+        _tp_event event = { 0 };
+        while (_tp_next_event(&event)) {
+            switch (event.kind) {
+                case _TP_EVENT_NONE:
+                    printf("[Event None]\n");
+                    break;
+
+                case _TP_EVENT_UNKNOWN:
+                    printf("[Event Unknown]\n");
+                    break;
+
+                case _TP_EVENT_KEY_ACTION:
+                    printf(
+                        "[Event Key Action] %s\n",
+                        key_action_names[event.key_action]
+                    );
+
+                    if (event.key_action == _TP_KEY_ACTION_QUIT) {
+                        running = false;
+                    }
+
+                    break;
+            }
+        }
+#endif
+
+        _tp_sleep_ms(20);
+    }
+
+    printf("\x1b[?1000l");
+
+    _tp_term_exit_raw(tc);
+
+    return 0;
+}
+
+
+
+#else
+
 int main(void) {
     tp_figure* fig = tp_begin(&(tp_figure_desc){
         .subplot_rows = 2,
         .subplot_cols = 2,
 
         .title = TP_STR8("Example Figure"),
-
-        .char_height_offset = -1,
     });
 
     #define N 64
@@ -169,4 +232,6 @@ int main(void) {
 
     return 0;
 }
+
+#endif
 
