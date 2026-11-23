@@ -23,9 +23,9 @@
         - [ ] Fallback error handling
     - [ ] Basic interface + focus logic
         - [X] Initial structure and draw loop
-        - [ ] Event processing and basic loop
+        - [X] Event processing
             - [X] Keyboard input
-            - [ ] Mouse input
+            - [X] Mouse input
         - [ ] Interactive draw context and initial UI drawing
     - [ ] Panning
     - [ ] Zooming

@@ -3228,7 +3228,8 @@ typedef enum {
     _TP_EVENT_MOUSE_DOWN,
     _TP_EVENT_MOUSE_MOVE,
     _TP_EVENT_MOUSE_UP,
-    _TP_EVENT_MOUSE_SCROLL,
+    _TP_EVENT_SCROLL_UP,
+    _TP_EVENT_SCROLL_DOWN,
 } _tp_event_kind;
 
 #define _TP_KEY_ACTION_XLIST \
@@ -3261,6 +3262,7 @@ typedef struct {
     _tp_event_kind kind;
     _tp_key_action key_action;
 
+    // (0, 0) based, not 1 based
     tp_u32 mouse_x;
     tp_u32 mouse_y;
 
@@ -3270,7 +3272,7 @@ typedef struct {
     // In short, the low two bits encode left middle and right as 0, 1, and 2
     // respectively. Modifiers add +4, +8, +16, and +32. Scrolling adds +64 
     // for up and +65 for down
-    tp_u8 mb_bits;
+    tp_u32 mb_bits;
 } _tp_event;
 
 tp_b32 _tp_next_event(_tp_event* event) {
@@ -3442,6 +3444,61 @@ tp_b32 _tp_next_event(_tp_event* event) {
         return _TP_TRUE;
     }
 
+    if (mouse) {
+        tp_u32 cb = 0, cx = 0, cy = 0;
+
+        c = _tp_term_read_char();
+        for (; isdigit(c); c = _tp_term_read_char()) {
+            cb *= 10;
+            cb += c - '0';
+        }
+
+        if (c != ';') { goto unknown; }
+
+        c = _tp_term_read_char();
+        for (; isdigit(c); c = _tp_term_read_char()) {
+            cx *= 10;
+            cx += c - '0';
+        }
+
+        if (c != ';') { goto unknown; }
+
+        c = _tp_term_read_char();
+        for (; isdigit(c); c = _tp_term_read_char()) {
+            cy *= 10;
+            cy += c - '0';
+        }
+
+        if (c != 'm' && c != 'M') { goto unknown; }
+
+        event->mb_bits = cb;
+        event->mouse_x = cx - 1;
+        event->mouse_y = cy - 1;
+
+        if (c == 'm') {
+            event->kind = _TP_EVENT_MOUSE_UP;
+            return _TP_TRUE;
+        }
+
+        // c must be 'M' here
+
+        tp_u32 scroll = cb & ~((tp_u32)0b111100);
+        if (scroll == 64) {
+            event->kind = _TP_EVENT_SCROLL_UP;
+        } else if (scroll == 65) {
+            event->kind = _TP_EVENT_SCROLL_DOWN;
+        } else {
+            if (cb & (1 << 5)) {
+                // +32 means motion
+                event->kind = _TP_EVENT_MOUSE_MOVE;
+            } else {
+                event->kind = _TP_EVENT_MOUSE_DOWN;
+            }
+        }
+
+        return _TP_TRUE;
+    }
+
 unknown:
     *event = (_tp_event){
         .kind = _TP_EVENT_UNKNOWN,
@@ -3468,7 +3525,12 @@ void tp_show_interactive(tp_figure* fig) {
     }
 
     tp_enable_utf8_output();
-    _tp_term_write(TP_STR8("\x1b[?1049h\x1b[?25l"));
+    _tp_term_write(TP_STR8(
+        "\x1b[?1049h" // Enable offscreen buffer
+        "\x1b[?25l" // Hide cursor
+        "\x1b[?1003h" // Enable mouse tracking
+        "\x1b[?1006h" // Enable SGR formatting for mouse events
+    ));
 
     // This arena is cleared when the figure's rendered size changes
     _tp_arena_temp termsize_arena = _tp_arena_temp_begin(fig->arena);
@@ -3579,7 +3641,13 @@ loop_end:
 
 end:
     if (term) {
-        _tp_term_write(TP_STR8("\x1b[?1049l\x1b[?25h"));
+        _tp_term_write(TP_STR8(
+            "\x1b[?1049l" // Disable offscreen buffer
+            "\x1b[?25h" // Show cursor
+            "\x1b[?1003l" // Disable mouse tracking
+            "\x1b[?1006l" // Disable SGR formatting for mouse events
+        ));
+
         _tp_term_exit_raw(term);
     }
 

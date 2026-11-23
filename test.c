@@ -16,7 +16,7 @@ typedef double f64;
 
 #define ARR_LEN(arr) (sizeof(arr) / sizeof(arr[0]))
 
-#if 0
+#if 1
 
 static const char* key_action_names[] = {
 #define X(action) #action,
@@ -28,7 +28,7 @@ int main(void) {
     _tp_arena* arena = _tp_arena_create(_TP_MiB(1), _TP_KiB(64));
     _tp_term_context* tc = _tp_term_enter_raw(arena);
 
-    printf("\x1b[?1000h\x1b[?1006h");
+    printf("\x1b[?1003h\x1b[?1006h");
 
     bool running = true;
     while (running) {
@@ -62,6 +62,42 @@ int main(void) {
                         running = false;
                     }
 
+                    break;
+
+                case _TP_EVENT_MOUSE_DOWN:
+                    printf(
+                        "[Event Mouse Down] at (%u %u)\n",
+                        event.mouse_x, event.mouse_y
+                    );
+                    break;
+
+                case _TP_EVENT_MOUSE_UP:
+                    printf(
+                        "[Event Mouse Up] at (%u %u)\n",
+                        event.mouse_x, event.mouse_y
+                    );
+                    break;
+
+                case _TP_EVENT_MOUSE_MOVE:
+                    printf(
+                        "[Event Mouse Move] at (%u %u)\n",
+                        event.mouse_x, event.mouse_y
+                    );
+                    break;
+
+
+                case _TP_EVENT_SCROLL_DOWN:
+                    printf(
+                        "[Event Scroll Down] at (%u %u)\n",
+                        event.mouse_x, event.mouse_y
+                    );
+                    break;
+
+                case _TP_EVENT_SCROLL_UP:
+                    printf(
+                        "[Event Scroll Up] at (%u %u)\n",
+                        event.mouse_x, event.mouse_y
+                    );
                     break;
             }
         }
