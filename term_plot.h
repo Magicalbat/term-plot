@@ -3214,7 +3214,11 @@ void tp_show_interactive(tp_figure* fig) {
 
 #else 
 
-#define _TP_INTERACT_UI_ROWS 2
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Interactive event handling
+// 
+////////////////////////////////////////////////////////////////////////////////
 
 typedef enum {
     _TP_EVENT_NONE = 0,
@@ -3506,6 +3510,131 @@ unknown:
     return _TP_TRUE;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// 
+// Interactive context functions 
+// 
+////////////////////////////////////////////////////////////////////////////////
+
+typedef enum {
+    _TP_IMODE_NORMAL = 0,
+    _TP_IMODE_HELP,
+
+    __TP_IMODE_COUNT
+} _tp_interact_mode;
+
+typedef struct {
+    _tp_interact_mode mode;
+} _tp_interact_context;
+
+typedef void (_tp_interact_dispatch_func)(
+    _tp_event* event, _tp_interact_context* interact,
+    tp_figure* fig, _tp_draw_context* draw_context, _tp_fig_layout* layout,
+    tp_b32* should_draw
+);
+
+void _tp_interact_dispatch_normal(
+    _tp_event* event, _tp_interact_context* interact,
+    tp_figure* fig, _tp_draw_context* draw_context, _tp_fig_layout* layout,
+    tp_b32* should_draw
+) {
+    if (event->kind == _TP_EVENT_KEY_ACTION) {
+        switch (event->key_action) {
+            case _TP_KEY_ACTION_HELP:
+                interact->mode = _TP_IMODE_HELP;
+                break;
+
+            default: break;
+        }
+    }
+}
+
+void _tp_interact_dispatch_help(
+    _tp_event* event, _tp_interact_context* interact,
+    tp_figure* fig, _tp_draw_context* draw_context, _tp_fig_layout* layout,
+    tp_b32* should_draw
+) {
+    if (event->kind == _TP_EVENT_KEY_ACTION) {
+        switch (event->key_action) {
+            case _TP_KEY_ACTION_CANCEL: 
+                interact->mode = _TP_IMODE_NORMAL;
+                break;
+
+            default: break;
+        }
+    }
+}
+
+static _tp_interact_dispatch_func* _tp_interact_funcs[__TP_IMODE_COUNT] = {
+    [_TP_IMODE_NORMAL] = _tp_interact_dispatch_normal,
+    [_TP_IMODE_HELP] = _tp_interact_dispatch_help,
+};
+
+static const tp_string8 _tp_mode_displays[] = {
+    [_TP_IMODE_NORMAL] = TP_STR8("Normal"),
+    [_TP_IMODE_HELP] = TP_STR8("Help"),
+};
+
+static const tp_string8 _tp_info_str = TP_STR8(
+    "Press q to quit | Press ? for help"
+);
+
+#define _TP_INTERACT_INFO_ROWS 2
+
+// In this function, there must be at least _TP_INTERACT_INFO_ROWS in the draw
+// target. Do not call this function if that is not the case
+void _tp_draw_interact_ui(_tp_draw_target* dt, _tp_interact_context* interact) {
+    tp_string8 mode_str = interact->mode < __TP_IMODE_COUNT ? 
+        _tp_mode_displays[interact->mode] : (tp_string8){ 0 };
+
+    tp_u32 mode_offset = mode_str.size >= dt->width ? 
+        0 : dt->width - 1 - (tp_u32)mode_str.size;
+
+    for (tp_u32 i = 0; i < mode_str.size && i + mode_offset < dt->width; i++) {
+        tp_u32 x = i + mode_offset;
+
+        dt->codepoints[x + (dt->height - 1) * dt->width] = mode_str.str[i];
+        dt->codepoints[x + (dt->height - 2) * dt->width] = 0x2501; // '━'
+    }
+
+    if (mode_offset >= 1) {
+        dt->codepoints[
+            (mode_offset - 1) + (dt->height - 2) * dt->width
+        ] = 0x250f; // '┏'
+
+        dt->codepoints[
+            (mode_offset - 1) + (dt->height - 1) * dt->width
+        ] = 0x2503; // '┃' 
+    }
+
+    for (
+        tp_u32 i = 0;
+        i < (tp_u32)_tp_info_str.size && i < dt->width;
+        i++
+    ) {
+        dt->codepoints[i + (dt->height - 1) * dt->width] = _tp_info_str.str[i];
+        dt->codepoints[i + (dt->height - 2) * dt->width] = 0x2501; // '━'
+    }
+
+    if (dt->width > _tp_info_str.size + 1) {
+        dt->codepoints[
+            _tp_info_str.size + (dt->height - 2) * dt->width
+        ] = 0x2501; // '━'
+
+        dt->codepoints[
+            _tp_info_str.size + (dt->height - 1) * dt->width
+        ] = ' ';
+
+        dt->codepoints[
+            (_tp_info_str.size + 1) + (dt->height - 2) * dt->width
+        ] = 0x2513; // '┓' 
+
+        dt->codepoints[
+            (_tp_info_str.size + 1) + (dt->height - 1) * dt->width
+        ] = 0x2503; // '┃' 
+    }
+}
+
 void tp_show_interactive(tp_figure* fig) {
     _tp_arena_temp temp_arena = _tp_arena_temp_begin(fig->arena);
 
@@ -3524,6 +3653,10 @@ void tp_show_interactive(tp_figure* fig) {
         goto end;
     }
 
+    _tp_interact_context interact = {
+        .mode = _TP_IMODE_NORMAL
+    };
+
     tp_enable_utf8_output();
     _tp_term_write(TP_STR8(
         "\x1b[?1049h" // Enable offscreen buffer
@@ -3536,7 +3669,6 @@ void tp_show_interactive(tp_figure* fig) {
     _tp_arena_temp termsize_arena = _tp_arena_temp_begin(fig->arena);
     _tp_dim_u32 draw_size = { 0 };
     _tp_rect_u32 fig_draw_area = { 0 };
-    _tp_rect_u32 ui_draw_area = { 0 };
     _tp_draw_target draw_target = { 0 };
     _tp_fig_layout layout = { 0 };
     tp_b32 layout_valid = _TP_FALSE;
@@ -3547,14 +3679,27 @@ void tp_show_interactive(tp_figure* fig) {
         tp_b32 should_draw = _TP_FALSE;
 
         _tp_event event = { 0 };
+        _tp_interact_mode start_mode = interact.mode;
         while (_tp_next_event(&event)) {
             if (
                 event.kind == _TP_EVENT_KEY_ACTION &&
                 event.key_action == _TP_KEY_ACTION_QUIT
             ) {
                 running = _TP_FALSE;
+                continue;
             }
+
+            if (interact.mode >= __TP_IMODE_COUNT) {
+                interact.mode = _TP_IMODE_NORMAL;
+            }
+
+            _tp_interact_funcs[interact.mode](
+                &event, &interact, fig, &draw_context,
+                &layout, &should_draw
+            );
         }
+        
+        if (interact.mode != start_mode) { should_draw = _TP_TRUE; }
 
         // Recreating draw target and redoing figure layout if the figure size
         // has changed
@@ -3569,19 +3714,12 @@ void tp_show_interactive(tp_figure* fig) {
 
             draw_size = cur_draw_size;
 
-            if (draw_size.height < _TP_INTERACT_UI_ROWS) {
+            if (draw_size.height < _TP_INTERACT_INFO_ROWS) {
                 fig_draw_area = (_tp_rect_u32){ 0 };
-                ui_draw_area = (_tp_rect_u32){ 0 };
             } else {
                 fig_draw_area = (_tp_rect_u32){
                     .w = draw_size.width,
-                    .h = draw_size.height - _TP_INTERACT_UI_ROWS,
-                };
-
-                ui_draw_area = (_tp_rect_u32){
-                    .w = draw_size.width,
-                    .h = _TP_INTERACT_UI_ROWS,
-                    .y = fig_draw_area.h,
+                    .h = draw_size.height - _TP_INTERACT_INFO_ROWS,
                 };
             }
 
@@ -3601,11 +3739,12 @@ void tp_show_interactive(tp_figure* fig) {
                 fig, &draw_target, &layout, &draw_context, fig_draw_area
             );
 
+            _tp_draw_interact_ui(&draw_target, &interact);
+
             tp_u64 rendered_size = _tp_draw_target_encode_size(
                 &draw_target, TP_NEWLINE_CRLF,
                 _TP_FALSE, !fig->monochrome
             );
-
             _tp_arena_temp render_arena = _tp_arena_temp_begin(fig->arena);
 
             tp_string8 rendered = {

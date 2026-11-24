@@ -16,7 +16,7 @@ typedef double f64;
 
 #define ARR_LEN(arr) (sizeof(arr) / sizeof(arr[0]))
 
-#if 1
+#if 0
 
 static const char* key_action_names[] = {
 #define X(action) #action,

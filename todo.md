@@ -27,6 +27,9 @@
             - [X] Keyboard input
             - [X] Mouse input
         - [ ] Interactive draw context and initial UI drawing
+            - [X] Initial mode system and event handling
+            - [X] Basic mode UI
+            - [ ] Help mode
     - [ ] Panning
     - [ ] Zooming
     - [ ] Reset view + undo/redo
