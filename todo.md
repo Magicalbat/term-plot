@@ -21,17 +21,20 @@
         - [X] Win32
         - [ ] Unix
         - [ ] Fallback error handling
-    - [ ] Basic interface + focus logic
+    - [X] Basic interface + focus logic
         - [X] Initial structure and draw loop
         - [X] Event processing
             - [X] Keyboard input
             - [X] Mouse input
-        - [ ] Interactive draw context and initial UI drawing
+        - [X] Interactive draw context and initial UI drawing
             - [X] Initial mode system and event handling
             - [X] Basic mode UI
-            - [ ] Help mode
     - [ ] Panning
+    - [ ] Help menu
     - [ ] Zooming
+        - [X] Transient keyboard zoom in/out
+        - [ ] Scroll zoom in/out
+        - [ ] Keyboard box zoom mode
     - [ ] Reset view + undo/redo
     - [X] Better nan/inf handling
     - [ ] More extensive examples

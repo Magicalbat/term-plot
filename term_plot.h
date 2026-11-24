@@ -3253,6 +3253,8 @@ typedef enum {
     X(PAN_MODE) \
     X(ZOOM_IN) \
     X(ZOOM_OUT) \
+    X(ZOOM_IN_BIG) \
+    X(ZOOM_OUT_BIG) \
     X(ZOOM_MODE) \
     X(RESET_VIEW)
 
@@ -3279,7 +3281,7 @@ typedef struct {
     tp_u32 mb_bits;
 } _tp_event;
 
-tp_b32 _tp_next_event(_tp_event* event) {
+static tp_b32 _tp_next_event(_tp_event* event) {
     tp_u8 c = _tp_term_read_char();
 
     if (c == 0) {
@@ -3340,6 +3342,12 @@ tp_b32 _tp_next_event(_tp_event* event) {
                 break;
             case 'o':
                 event->key_action = _TP_KEY_ACTION_ZOOM_OUT;
+                break;
+            case 'I':
+                event->key_action = _TP_KEY_ACTION_ZOOM_IN_BIG;
+                break;
+            case 'O':
+                event->key_action = _TP_KEY_ACTION_ZOOM_OUT_BIG;
                 break;
             case 'z':
                 event->key_action = _TP_KEY_ACTION_ZOOM_MODE;
@@ -3525,34 +3533,130 @@ typedef enum {
 
 typedef struct {
     _tp_interact_mode mode;
+
+    _tp_event_kind last_event_kind;
+
+    tp_u32 focus_row;
+    tp_u32 focus_col;
 } _tp_interact_context;
+
+// Zooms in or out of a given subplot
+// If `zoom_factor` is positive, this zooms in
+// If `zoom_factor` is negative, this zooms out
+static void _tp_interact_zoom(
+    const tp_figure* fig, _tp_draw_context* draw_context,
+    tp_u32 subplot_row, tp_u32 subplot_col,
+    tp_f64 zoom_factor
+) {
+    tp_u32 row = _TP_MIN(subplot_row, fig->subplot_rows);
+    tp_u32 col = _TP_MIN(subplot_col, fig->subplot_cols);
+
+    _tp_axes_bounds* bounds = draw_context->bounds +
+        (col + row * fig->subplot_cols);
+
+    tp_f64 xsize = zoom_factor / 2.0 * _TP_ABS(bounds->xmax - bounds->xmin);
+    tp_f64 ysize = zoom_factor / 2.0 * _TP_ABS(bounds->ymax - bounds->ymin);
+
+    bounds->xmin += xsize;
+    bounds->xmax -= xsize;
+
+    bounds->ymin += ysize;
+    bounds->ymax -= ysize;
+}
 
 typedef void (_tp_interact_dispatch_func)(
     _tp_event* event, _tp_interact_context* interact,
-    tp_figure* fig, _tp_draw_context* draw_context, _tp_fig_layout* layout,
-    tp_b32* should_draw
+    const tp_figure* fig, _tp_draw_context* draw_context,
+    const _tp_fig_layout* layout, tp_b32* should_draw
 );
 
-void _tp_interact_dispatch_normal(
+static void _tp_interact_dispatch_normal(
     _tp_event* event, _tp_interact_context* interact,
-    tp_figure* fig, _tp_draw_context* draw_context, _tp_fig_layout* layout,
-    tp_b32* should_draw
+    const tp_figure* fig, _tp_draw_context* draw_context,
+    const _tp_fig_layout* layout, tp_b32* should_draw
 ) {
     if (event->kind == _TP_EVENT_KEY_ACTION) {
+        *should_draw = _TP_TRUE;
+
         switch (event->key_action) {
             case _TP_KEY_ACTION_HELP:
                 interact->mode = _TP_IMODE_HELP;
                 break;
 
-            default: break;
+            case _TP_KEY_ACTION_UP: 
+                interact->focus_row = interact->focus_row > 0 ?
+                    interact->focus_row - 1 : 0;
+                break;
+            case _TP_KEY_ACTION_DOWN: 
+                interact->focus_row = _TP_MIN(
+                    interact->focus_row + 1, fig->subplot_rows - 1
+                );
+                break;
+            case _TP_KEY_ACTION_LEFT: 
+                interact->focus_col = interact->focus_col > 0 ?
+                    interact->focus_col - 1 : 0;
+                break;
+            case _TP_KEY_ACTION_RIGHT: 
+                interact->focus_col = _TP_MIN(
+                    interact->focus_col + 1, fig->subplot_cols - 1
+                );
+                break;
+
+            case _TP_KEY_ACTION_HARD_UP:
+                interact->focus_row = 0;
+                break;
+            case _TP_KEY_ACTION_HARD_DOWN:
+                interact->focus_row = fig->subplot_rows - 1;
+                break;
+            case _TP_KEY_ACTION_HARD_LEFT:
+                interact->focus_col = 0;
+                break;
+            case _TP_KEY_ACTION_HARD_RIGHT:
+                interact->focus_col = fig->subplot_cols - 1;
+                break;
+
+            case _TP_KEY_ACTION_ZOOM_IN: 
+                _tp_interact_zoom(
+                    fig, draw_context,
+                    interact->focus_row, interact->focus_col, 0.1
+                );
+                break;
+            case _TP_KEY_ACTION_ZOOM_OUT: 
+                _tp_interact_zoom(
+                    fig, draw_context,
+                    interact->focus_row, interact->focus_col, -0.1/0.9
+                );
+                break;
+            case _TP_KEY_ACTION_ZOOM_IN_BIG: 
+                _tp_interact_zoom(
+                    fig, draw_context,
+                    interact->focus_row, interact->focus_col, 0.25
+                );
+                break;
+            case _TP_KEY_ACTION_ZOOM_OUT_BIG: 
+                _tp_interact_zoom(
+                    fig, draw_context,
+                    interact->focus_row, interact->focus_col, -0.25/0.75
+                );
+                break;
+
+            default:
+                *should_draw = _TP_FALSE;
+                break;
+        }
+    } else if (event->kind != _TP_EVENT_UNKNOWN) {
+        if (interact->last_event_kind == _TP_EVENT_KEY_ACTION) {
+            // Going from using the keyboard to using the mouse, redraw to get
+            // rid of the focus highlight
+            *should_draw = _TP_TRUE;
         }
     }
 }
 
-void _tp_interact_dispatch_help(
+static void _tp_interact_dispatch_help(
     _tp_event* event, _tp_interact_context* interact,
-    tp_figure* fig, _tp_draw_context* draw_context, _tp_fig_layout* layout,
-    tp_b32* should_draw
+    const tp_figure* fig, _tp_draw_context* draw_context,
+    const _tp_fig_layout* layout, tp_b32* should_draw
 ) {
     if (event->kind == _TP_EVENT_KEY_ACTION) {
         switch (event->key_action) {
@@ -3583,55 +3687,99 @@ static const tp_string8 _tp_info_str = TP_STR8(
 
 // In this function, there must be at least _TP_INTERACT_INFO_ROWS in the draw
 // target. Do not call this function if that is not the case
-void _tp_draw_interact_ui(_tp_draw_target* dt, _tp_interact_context* interact) {
-    tp_string8 mode_str = interact->mode < __TP_IMODE_COUNT ? 
-        _tp_mode_displays[interact->mode] : (tp_string8){ 0 };
+static void _tp_draw_interact_ui(
+    _tp_draw_target* dt, _tp_interact_context* interact,
+    const tp_figure* fig, const _tp_fig_layout* layout
+) {
+    // Drawing mode string
+    {
+        tp_string8 mode_str = interact->mode < __TP_IMODE_COUNT ? 
+            _tp_mode_displays[interact->mode] : (tp_string8){ 0 };
 
-    tp_u32 mode_offset = mode_str.size >= dt->width ? 
-        0 : dt->width - 1 - (tp_u32)mode_str.size;
+        tp_u32 mode_offset = mode_str.size >= dt->width ? 
+            0 : dt->width - 1 - (tp_u32)mode_str.size;
 
-    for (tp_u32 i = 0; i < mode_str.size && i + mode_offset < dt->width; i++) {
-        tp_u32 x = i + mode_offset;
+        for (
+            tp_u32 i = 0;
+            i < mode_str.size && i + mode_offset < dt->width;
+            i++
+        ) {
+            tp_u32 x = i + mode_offset;
 
-        dt->codepoints[x + (dt->height - 1) * dt->width] = mode_str.str[i];
-        dt->codepoints[x + (dt->height - 2) * dt->width] = 0x2501; // '━'
+            dt->codepoints[x + (dt->height - 1) * dt->width] = mode_str.str[i];
+            dt->codepoints[x + (dt->height - 2) * dt->width] = 0x2501; // '━'
+        }
+
+        if (mode_offset >= 1) {
+            dt->codepoints[
+                (mode_offset - 1) + (dt->height - 2) * dt->width
+            ] = 0x250f; // '┏'
+
+            dt->codepoints[
+                (mode_offset - 1) + (dt->height - 1) * dt->width
+            ] = 0x2503; // '┃' 
+        }
     }
 
-    if (mode_offset >= 1) {
-        dt->codepoints[
-            (mode_offset - 1) + (dt->height - 2) * dt->width
-        ] = 0x250f; // '┏'
+    // Drawing info string
+    {
+        for (
+            tp_u32 i = 0;
+            i < (tp_u32)_tp_info_str.size && i < dt->width;
+            i++
+        ) {
+            dt->codepoints[
+                i + (dt->height - 1) * dt->width
+            ] = _tp_info_str.str[i];
 
-        dt->codepoints[
-            (mode_offset - 1) + (dt->height - 1) * dt->width
-        ] = 0x2503; // '┃' 
+            dt->codepoints[i + (dt->height - 2) * dt->width] = 0x2501; // '━'
+        }
+
+        if (dt->width > _tp_info_str.size + 1) {
+            dt->codepoints[
+                _tp_info_str.size + (dt->height - 2) * dt->width
+            ] = 0x2501; // '━'
+
+            dt->codepoints[
+                _tp_info_str.size + (dt->height - 1) * dt->width
+            ] = ' ';
+
+            dt->codepoints[
+                (_tp_info_str.size + 1) + (dt->height - 2) * dt->width
+            ] = 0x2513; // '┓' 
+
+            dt->codepoints[
+                (_tp_info_str.size + 1) + (dt->height - 1) * dt->width
+            ] = 0x2503; // '┃' 
+        }
     }
 
-    for (
-        tp_u32 i = 0;
-        i < (tp_u32)_tp_info_str.size && i < dt->width;
-        i++
-    ) {
-        dt->codepoints[i + (dt->height - 1) * dt->width] = _tp_info_str.str[i];
-        dt->codepoints[i + (dt->height - 2) * dt->width] = 0x2501; // '━'
-    }
+    if (interact->mode == _TP_IMODE_NORMAL) {
+        if (interact->last_event_kind == _TP_EVENT_KEY_ACTION) {
+            // Highlight focused subplot
+            tp_u32 f_row = _TP_MIN(interact->focus_row, fig->subplot_rows);
+            tp_u32 f_col = _TP_MIN(interact->focus_col, fig->subplot_cols);
 
-    if (dt->width > _tp_info_str.size + 1) {
-        dt->codepoints[
-            _tp_info_str.size + (dt->height - 2) * dt->width
-        ] = 0x2501; // '━'
+            tp_u32 axes_index = f_col + f_row * fig->subplot_cols;
 
-        dt->codepoints[
-            _tp_info_str.size + (dt->height - 1) * dt->width
-        ] = ' ';
+            _tp_rect_u32 graphable = layout->graphable[axes_index];
 
-        dt->codepoints[
-            (_tp_info_str.size + 1) + (dt->height - 2) * dt->width
-        ] = 0x2513; // '┓' 
+            tp_rgb8 bg = fig->axes[axes_index].bg_col;
+            tp_rgb8 new_bg = {
+                .r = (tp_u8)(bg.r + (bg.r < 128 ? 50 : -50)),
+                .g = (tp_u8)(bg.g + (bg.g < 128 ? 50 : -50)),
+                .b = (tp_u8)(bg.b + (bg.b < 128 ? 50 : -50)),
+            };
 
-        dt->codepoints[
-            (_tp_info_str.size + 1) + (dt->height - 1) * dt->width
-        ] = 0x2503; // '┃' 
+            for (tp_u32 ly = 0; ly < graphable.h; ly++) {
+                for (tp_u32 lx = 0; lx < graphable.w; lx++) {
+                    tp_u32 index = (graphable.x + lx) +
+                        (graphable.y + ly) * dt->width;
+
+                    dt->bg_cols[index] = new_bg;
+                }
+            }
+        }
     }
 }
 
@@ -3697,6 +3845,8 @@ void tp_show_interactive(tp_figure* fig) {
                 &event, &interact, fig, &draw_context,
                 &layout, &should_draw
             );
+
+            interact.last_event_kind = event.kind;
         }
         
         if (interact.mode != start_mode) { should_draw = _TP_TRUE; }
@@ -3739,7 +3889,7 @@ void tp_show_interactive(tp_figure* fig) {
                 fig, &draw_target, &layout, &draw_context, fig_draw_area
             );
 
-            _tp_draw_interact_ui(&draw_target, &interact);
+            _tp_draw_interact_ui(&draw_target, &interact, fig, &layout);
 
             tp_u64 rendered_size = _tp_draw_target_encode_size(
                 &draw_target, TP_NEWLINE_CRLF,
